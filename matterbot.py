@@ -252,7 +252,7 @@ class MattermostManager(object):
             memberlist = []
             for channame in self.commands[module]['chans']:
                 try:
-                    memberlist.extend([_['user_id'] for _ in self.mmDriver.channels.get_channel_members(self.channame_to_chanid(channame))])
+                    memberlist.extend([ _['user_id'] for _ in self.mmDriver.channels.get_channel_members(self.channame_to_chaninfo(channame)['id']) ])
                     if user in memberlist:
                         return True
                 except:
