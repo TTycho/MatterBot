@@ -150,8 +150,8 @@ class MattermostManager(object):
             with open(options.Matterbot['bindmap'],'w') as f:
                 json.dump(self.bindmap,f)
         except:
-            raise
             log.error("An error occurred updating the `%s` bindmap file; config changes were not successfully saved!" % (options.Matterbot['bindmap'],))
+            raise
 
     async def handle_raw_message(self, raw_json: str):
         try:
