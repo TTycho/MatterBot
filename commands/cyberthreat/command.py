@@ -1,27 +1,61 @@
 #!/usr/bin/env python3
 import re
 import requests
+import logging
 import tldextract
 from pathlib import Path
 from datetime import datetime
-from . import cyberthreat
-
+from .  import cyberthreat
+"""
+Simplified the settings import to avoid redundant checks.
+"""
 try:
-    from commands.cyberthreat import defaults as settings
-except ModuleNotFoundError: # local test run
-    import defaults as settings # things that doesnt work
-    if Path('settings.py').is_file():
-        import settings
-else:
-    if Path('commands/cyberthreat/settings.py').is_file():
-        try:
-            from commands.cyberthreat import settings
-        except ModuleNotFoundError: # local test run
-            import settings
+    from . import settings
+except ModuleNotFoundError:
+    from . import defaults as settings
+from typing import List, Literal, TypedDict
 
-"""
-Got some problems with the above way of importing settings. Throws an error is there is no settings module, just defaults
-"""
+# Define the allowed types for parameters
+ParameterType = Literal['ipv4', 'domain']
+
+# Define the structure of the `command` dictionary
+class Command(TypedDict):
+    parameters: List[ParameterType]
+
+
+class commands():
+    """
+    This module allows to query the cyberthreat.nl API for threat intelligence data.
+    """
+    def __init__(self):
+        self.module_name = 'cyberthreat'
+
+    def query(self, command: Command, channel: str, username: str, files: list, conn) -> None:
+        """
+        Process the query command with type-checked parameters.
+        """
+        # Example usage of type checking
+        parameters = command.get('parameters', [])
+        if not parameters:
+            logging.warning("No parameters provided in the command.")
+            return
+
+        for param in parameters:
+            if param == 'ipv4':
+                logging.info(f"Processing IPv4 parameter: {param}")
+            elif param == 'domain':
+                logging.info(f"Processing domain parameter: {param}")
+            else:
+                logging.error(f"Unexpected parameter type: {param}")
+
+    def actor(self, command, channel, username, files, conn):
+        results = cyberthreat.wget('actors')
+
+        actorlist = dict()
+        for actor in results['results']:
+            actorlist[actor['name']]=actor
+
+        pass
 
 
 #print(f"Locals: {locals()}")
@@ -31,12 +65,15 @@ actorlist = dict()
 for actor in results['results']:
     actorlist[actor['name']]=actor
 
-
-def process(command, channel, username, params, files, conn):
+# messages[module_name], channame, username, files, self.mmDriver
+# def process(command, channel, username, params, files, conn):
+def process(command, channel, username, files, conn):
+    # {'command': '@ct', 'parameters': ['ep6pheij.com'], 'options': [], 'subcommand': 'query', 'type': 'domain'}
     filters = '&'.join(settings.APIURL['cyberthreat']['filters'])
 
-
+    params = command.get('parameters', [])
     if len(params)>0:
+        logging.debug(f"cyberthreat command called with params: {params}")
         params = params[0].replace('[', '').replace(']', '').replace('hxxp','http').lower()
         intro = f"cyberthreat.nl *Hosting Intelligence* API search for `{params}`:"
         listitem = '`\n- `'
@@ -86,7 +123,6 @@ def process(command, channel, username, params, files, conn):
                             text+=f"Last seen: {fqdnlist[domain]['last_seen'].strftime('%Y-%m-%d')}.\n"
                             if len(fqdnlist[domain]['subdomains']):
                                 text+=f"We have found the following subdomains: \n- `{listitem.join(fqdnlist[domain]['subdomains'])}`."
-                        
                 else:
                     """ In case the params doesnt even look like a valid domain name. """
                     return

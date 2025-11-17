@@ -1,15 +1,37 @@
-azure-search-documents
-azure-storage-blob
-beautifulsoup4
-ConfigArgParse
-feedparser
-graphviz
+# Configuration management
+configargparse
+
+# Mattermost integration packages
 mattermostdriver
-paramiko
-pyOpenSSL
-pypandoc
-PyYAML
-Requests
-tldextract
+
+# Core module dependencies
+# ipaddress
+# tldextract
+validators
+# Web scraping and parsing
+beautifulsoup4
+feedparser
+requests
 urllib3
+
+# Data processing and serialization
+pyyaml
+
+# File and storage operations
+azure-storage-blob
+pypandoc
 weasyprint
+
+# Network and SSH
+paramiko
+pyopenssl
+
+# Visualization
+graphviz
+# Development and testing packages
+pytest
+pytest-cov
+
+# Azure services
+azure-search-documents
+
