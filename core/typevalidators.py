@@ -123,7 +123,7 @@ class UUID(str):
             raise ValueError(f"Invalid UUID: {value}")
         return str.__new__(cls, v)
 
-
+'''A longstring can be multiple wordt separated by spaces or a single string.'''
 class LongString(str):
     def __new__(cls, value: str) -> "LongString":
         v = value
@@ -131,6 +131,13 @@ class LongString(str):
             raise ValueError(f"Somehow this is not a string: {value}")
         return str.__new__(cls, v)
 
+'''This is a single word.'''
+class String(str):
+    def __new__(cls, value: str) -> "LongString":
+        v = value
+        if not isinstance(value, str):
+            raise ValueError(f"Somehow this is not a string: {value}")
+        return str.__new__(cls, v)
 
 
 class ASN(str):

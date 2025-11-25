@@ -7,14 +7,23 @@ import concurrent.futures
 import copy
 import fnmatch
 import importlib.util
+import inspect
 import json
 import logging
 import os
 import pathlib
 import sys
 import configargparse
+import typing
+from typing import get_type_hints, get_origin, get_args
+
 from mattermostdriver import Driver
+from core import helpers
 from core.helpers import checktype
+from core import typevalidators
+from core.formatters import format_as_tables
+
+import colorlog
 
 class TokenAuth():
     def __call__(self, r):
@@ -50,79 +59,131 @@ class MattermostManagers(object):
         # Load an existing module channel binding map if present
         modulepath = options.Modules['commanddir'].strip('/')
         sys.path.append(modulepath)
-        self.commands = {}
+        self.modules = {}
+        self.modules = {}
         self.binds = {}
         self.channelmapping = { 'idtoname': {}, 'nametoid': {}}
         
-
-
         '''
         Bindmap should become: {'!help': ['help'], '@help': ['help'], '@bootloaders': ['bootloaders'], '@bl': ['bootloaders'], '@ioc': ['bootloaders', 'cyberthreat', 'misp', 'malpedia', 'loldrivers', 'malwarebazaar', 'ripewhois', 'lolbas', 'urlhaus', 'virustotal', 'threatfox', 'ipwhois', 'sslmate', 'gtfobins', 'bssc'], '@upi': ['unprotectit'], '@ttp': ['unprotectit'], '@cyberthreat': ['cyberthreat'], '@ct': ['cyberthreat'], '@misp': ['misp'], 'hello': ['example'], 'hi': ['example'], 'hiya': ['example'], 'howdi': ['example'], 'greetings': ['example'], '@hybridanalysis': ['hybridanalysis'], '@ha': ['hybridanalysis'], '@malpedia': ['malpedia'], '@mp': ['malpedia'], '@loldrivers': ['loldrivers'], '@ld': ['loldrivers'], '@analyze': ['analyze'], '@malwarebazaar': ['malwarebazaar'], '@mb': ['malwarebazaar'], '@alienvault': ['alienvault'], '@av': ['alienvault'], '@tlsgrab': ['tlsgrab'], '@tg': ['tlsgrab'], '@ripewhois': ['ripewhois'], '@docgen': ['docgen'], '@lolbas': ['lolbas'], '@lb': ['lolbas'], '@ewa': ['ewa'], '@urlhaus': ['urlhaus'], '@uh': ['urlhaus'], '@tweetfeed': ['tweetfeed'], '@virustotal': ['virustotal'], '@vt': ['virustotal'], '@greynoise': ['greynoise'], '@threatfox': ['threatfox'], '@tf': ['threatfox'], '@censys': ['censys'], '@snow': ['snowplough'], '@snowplough': ['snowplough'], '@sp': ['snowplough'], '@ipwhois': ['ipwhois'], '@sslmate': ['sslmate'], '@geo': ['geolookup'], '@geolookup': ['geolookup'], '@gl': ['geolookup'], '@ai': ['chatgpt'], '@openai': ['chatgpt'], '@chatgpt': ['chatgpt'], '@gpt': ['chatgpt'], '@robot': ['chatgpt'], '@qualys': ['qualys'], '@ql': ['qualys'], '@am': ['attackmatrix'], '@attackmatrix': ['attackmatrix'], '@leakix': ['leakix'], '@li': ['leakix'], '@wiki': ['wikijs'], '@wikijs': ['wikijs'], '@asnwhois': ['asnwhois'], '@asn': ['asnwhois'], '@gtfobins': ['gtfobins'], '@gb': ['gtfobins'], '@bssc': ['bssc'], '@dice': ['diceroll'], '@roll': ['diceroll'], '@shodan': ['shodan']}
 
         '''
         try:
             bindmap = pathlib.Path(options.Matterbot['bindmap'])
-            if bindmap.is_file():
+            if bindmap.is_file() and False: # temporaly disable loading existing bindmap
                 with open(bindmap, 'r') as f:
-                    self.commands = json.load(f)
-                    log.info(f"loaded bindmap and populated self.commands: {self.commands}")
+                    self.modules = json.load(f) # Oops. commands was also used for commands class.
+                    log.info(f"loaded bindmap and populated self.modules: {self.modules}")
                     log.info(f"")
-                    log.info(f"Keys are {self.commands.keys()}")
-                    for module in self.commands.keys():
+                    log.info(f"Keys are {self.modules.keys()}")
+                    for module in self.modules.keys():
                         log.debug(f"Working on module {module}")
-                        for bind in self.commands[module]['BINDS']:
+                        for bind in self.modules[module]['BINDS']:
                             if bind not in self.binds:
                                 self.binds[bind] = []
                             log.info(f"adding module '{module}' to bind '{bind}'")
                             self.binds[bind].append(module)
                 log.debug(f"self.binds is now: {self.binds}")
-                log.info(f"Loaded existing bindmap file {options.Matterbot['bindmap']} to {self.commands}")
+                log.info(f"Loaded existing bindmap file {options.Matterbot['bindmap']} to {self.modules}")
         except: # There is no existing command map, or it failed loading; create an empty map instead.
             pass
-        # Load any new modules
-        # for root, dirs, files in os.walk(modulepath):
-        #     log.info(f"all modules: {fnmatch.filter(files, 'command.py')}")
-        for root, dirs, files in os.walk(modulepath):
+
+
+
+        # Load any new modules by listng directories under _modulepath_
+        for root, dirs, files in os.walk(modulepath):    
+            """
+            If a directory contains a command.py file, load the functions in the commands class into self.module[module_name]['commands']
+            also save ['doc'] and ['defaultcommand']. The actual function is stored in self.module[module_name]['commands'][subcommand]['function']
+            """
             if "command.py" in files:
                 module_name = root.split('/')[-1].lower()
                 module = importlib.import_module(module_name + '.' + 'command', package=module_name)
 
-                self.commands[module_name] = {}
-                self.commands[module_name]['process'] = getattr(module, 'process')
+                self.modules[module_name] = {}
+                # self.modules[module_name]['process'] = getattr(module, 'process') # old function
+                log.warning(f"Module: {module_name}")
+                subcommands = getattr(module, 'commands')
+                log.warning(f"Class subcommands: {subcommands}")
+                """
+                Get documentation from the docstrings
+                """
+                self.modules[module_name]['doc'] = inspect.getdoc(subcommands)
+                """
+                Make the first function in the commands class the default command
+                """
+                # inspect.getmembers() sorts it. We filter out _functions seperately
+                self.modules[module_name]['defaultcommand'] = next(iter([
+                    name 
+                    for name, parent in subcommands.__dict__.items()
+                    if not name.startswith('_')
+                ]), None)
 
-                settings = {}
-                if module_name in self.commands: # What is this check for? Skip if already loaded via bindmap?
-                    # Is it not better to load command modules first and then populate self.commands with 
+                """
+                The functions in the commands class will become subcommands except the `__special` and `_private` ones
+                """
+                # instantiate the commands class so we can store bound methods
+                inst = subcommands()
+                self.modules[module_name]['instance'] = inst
+                self.modules[module_name]['class'] = subcommands
+                 # Build commands dict by iterating functions and extracting metadata (do not use statements inside a dict-comprehension)
+                self.modules[module_name]['commands'] = {}
+                for name, func in inspect.getmembers(subcommands, predicate=inspect.isfunction):
+                    if name.startswith('_'):
+                        continue
+                    # Resolve forward refs using the function's globals
+                    hints = get_type_hints(func, globalns=getattr(func, "__globals__", {}))
+                    annotations = hints.get('parameters', None)
+                    annotationset = helpers.expand_annotation(annotations)
+                    bound = getattr(inst, name)
+                    self.modules[module_name]['commands'][name.lower()] = {
+                        "originalname": name,
+                        # "doc": inspect.getdoc(func),
+                        "annotations": annotations,
+                        "types": annotationset,
+                        "function": bound
+                    }
+
+                log.debug(f"Allowed subcommands: {self.modules[module_name]['commands']}")
+                log.warning(f"Loaded module: {module_name}; {self.modules[module_name]}")
+
+                if module_name in self.modules: # What is this check for? Skip if already loaded via bindmap?
+                    settings = {} # if 'settings' was set. This deletes it again.
+                    # Is it not better to load command modules first and then populate self.modules with 
                     # information from the bindmap?
-                    log.error(f"Module name {module_name} is already read. The new module will overwrite the one first one.")
-                
+                    
+                    try:
+                        defaults = importlib.import_module(modulepath + '.' + module_name + '.' + 'defaults')
+                        # settings.update(defaults.__dict__)
+                        settings.update({k: v for k, v in defaults.__dict__.items() if not k.startswith('__')})
+                    except ImportError:
+                        log.error(f"{module_name}.default did not load.")
+                    
+                    try:
+                        overridesettings = importlib.import_module(modulepath + '.' + module_name + '.' + 'settings')
+                        settings.update(overridesettings.__dict__)
+                        settings.update({k: v for k, v in overridesettings.__dict__.items() if not k.startswith('__')})
+                    except ImportError:
+                        log.info(f"{module_name}.settings did not load.")
+
+                    # log.error(f"{settings}")
+                    self.modules[module_name]['settings'] = settings
+                    # log.debug(f"Self commands: {self.modules}")
+                    for bind in settings['BINDS']:
+                        if bind not in self.binds:
+                            self.binds[bind] = []
+                        self.binds[bind].append(module_name)
+                    log.debug(f"Binds: {self.binds}")
                 try:
-                    defaults = importlib.import_module(modulepath + '.' + module_name + '.' + 'defaults')
-                    # settings.update(defaults.__dict__)
-                    settings.update({k: v for k, v in defaults.__dict__.items() if not k.startswith('__')})
-                except ImportError:
-                    log.error(f"{module_name}.default did not load.")
-                
-                try:
-                    overridesettings = importlib.import_module(modulepath + '.' + module_name + '.' + 'settings')
-                    settings.update(overridesettings.__dict__)
-                    settings.update({k: v for k, v in overridesettings.__dict__.items() if not k.startswith('__')})
-                except ImportError:
-                    log.info(f"{module_name}.settings did not load.")
- 
-                # log.error(f"{settings}")
-                self.commands[module_name]['settings'] = settings
-                # log.debug(f"Self commands: {self.commands}")
-                for bind in settings['BINDS']:
-                    if bind not in self.binds:
-                        self.binds[bind] = []
-                    self.binds[bind].append(module_name)
-            log.debug(f"Binds: {self.binds}")
-        try:
-            with open(options.Matterbot['bindmap'],'w') as f:
-                json.dump(self.commands,f)
-        except:
-            log.error("An error occurred writing the bindmap file: %s" % (options.Matterbot['bindmap'],))
+                    with open(options.Matterbot['bindmap'],'w') as f:
+                        log.warning(f"""
+                                    Something goes wrong here.
+                                    self.modules is: {self.modules}
+                                    Bindmap is: {self.binds}
+                                    """)
+                        json.dump(self.binds,f)
+                except:
+                    log.error("An error occurred writing the bindmap file: %s" % (options.Matterbot['bindmap'],))
         
         # # Resolve function calls and update the module help
         # for root, dirs, files in os.walk(modulepath):
@@ -136,8 +197,8 @@ class MattermostManagers(object):
         #             overridesettings = importlib.import_module(module_name + '.' + 'settings')    
         #             if hasattr(overridesettings, 'HELP'):
         #                 HELP = overridesettings.HELP
-        #         self.commands[module_name]['process'] = getattr(module, 'process')
-        #         self.commands[module_name]['help'] = HELP
+        #         self.modules[module_name]['process'] = getattr(module, 'process')
+        #         self.modules[module_name]['help'] = HELP
 
                 
         # self.binds = sorted(list(set(self.binds)))
@@ -146,9 +207,9 @@ class MattermostManagers(object):
         self.mmDriver.init_websocket(self.handle_raw_message)
 
 
-    async def update_bindmap(self):
+    async def update_bindmap(self): # XXX have to look into this. Probably changed.
         try:
-            self.bindmap = copy.deepcopy(self.commands)
+            self.bindmap = copy.deepcopy(self.modules)
             for module in self.bindmap:
                 del self.bindmap[module]['settings']
                 del self.bindmap[module]['process']
@@ -283,18 +344,18 @@ class MattermostManagers(object):
         channame = chaninfo['name']
         if chaninfo['type'] in ('O', 'P'):
             log.debug(f"Channel name: {chaninfo['name']}")
-            if (channame or 'any') in self.commands[module]['settings']['CHANS']:
+            if (channame or 'any') in self.modules[module]['settings']['CHANS']:
                 return True
-        elif chaninfo['type'] == 'D' and 'private' in self.commands[module]['settings']['CHANS']:
-            return
+        elif chaninfo['type'] == 'D' and 'private' in self.modules[module]['settings']['CHANS']:
+            return True
         elif chaninfo['type'] in ('D', 'G'):
             """
             Check if a user is in one of the channels that are configured in the modules 'chans'
             """
             memberlist = []
-            if ('any') in self.commands[module]['settings']['CHANS']:
+            if ('any') in self.modules[module]['settings']['CHANS']:
                 return True
-            for allowed_channame in self.commands[module]['settings']['CHANS']:
+            for allowed_channame in self.modules[module]['settings']['CHANS']:
                 try:
                     memberlist.extend([_['user_id'] for _ in self.mmDriver.channels.get_channel_members(self.channame_to_chanid(allowed_channame))])
                     if user in memberlist:
@@ -314,7 +375,7 @@ class MattermostManagers(object):
         messages = []
         if not params:
             if command in ('!map', '@map'):
-                if len(self.commands):
+                if len(self.modules):
                     chans = set()
                     if (self.my_id and userid) in channame:
                         text =  "**List of modules in direct message:**\n"
@@ -323,13 +384,13 @@ class MattermostManagers(object):
                     text += "\n"
                     text += "\n| **Module Name** | **Available** | **Binds** | **Description** |"
                     text += "\n| :- |  :- | :- |"
-                    for module in sorted(self.commands):
+                    for module in sorted(self.modules):
                         if self.isallowed_module(userid,module,chaninfo):
                             chans.add(module)
-                            text += "\n| %s | **YES** | `%s` | %s |" % (module,'`, `'.join(sorted(self.commands[module]['BINDS'])),self.commands[module]['settings']['help']['DEFAULT']['desc'].replace('|','/'))
+                            text += "\n| %s | **YES** | `%s` | %s |" % (module,'`, `'.join(sorted(self.modules[module]['BINDS'])),self.modules[module]['settings']['help']['DEFAULT']['desc'].replace('|','/'))
                         elif self.isadmin(userid):
                             chans.add(module)
-                            text += "\n| %s | **NO** | `%s` | %s |" % (module,'`, `'.join(sorted(self.commands[module]['BINDS'])),self.commands[module]['settings']['help']['DEFAULT']['desc'].replace('|','/'))
+                            text += "\n| %s | **NO** | `%s` | %s |" % (module,'`, `'.join(sorted(self.modules[module]['BINDS'])),self.modules[module]['settings']['help']['DEFAULT']['desc'].replace('|','/'))
                     text += "\n\n"
                 if not len(chans):
                     text = '@' + username + ", I don't know about any commands here.\n"
@@ -337,7 +398,7 @@ class MattermostManagers(object):
                 messages.append(text)
         else:
             if not self.isadmin(userid):
-                logging.warning("User %s attempted to use a bind command without proper authorization.") % (userid,)
+                log.warning("User %s attempted to use a bind command without proper authorization.") % (userid,)
                 text = "@" + username + ", you do not have permission to bind commands."
             else:
                 all_channel_types = [self.chanid_to_channame(_['id']) for _ in self.mmDriver.channels.get_channels_for_user(self.my_id,self.my_team_id)]
@@ -346,21 +407,21 @@ class MattermostManagers(object):
                     text = "@" + username + ", you cannot bind commands to direct message windows."
                 else:
                     if params[0] == '*':
-                        params = self.commands.keys() # Attempt to enable/disable all modules
+                        params = self.modules.keys() # Attempt to enable/disable all modules
                     for modulename in params:
-                        if not modulename in self.commands:
+                        if not modulename in self.modules:
                             text = "@" + username + ", there is no `%s` module loaded. Use one of the help commands (`%s`) to see a list of available modules." % (modulename,"`, `".join(options.Matterbot['helpcmds']))
                         elif command in ('!bind', '@bind'):
-                            if channame in self.commands[modulename]['CHANS']:
+                            if channame in self.modules[modulename]['CHANS']:
                                 text = "The `%s` module is already available in the `%s` channel." % (modulename,self.channame_to_chandisplayname(channame))
                             else:
-                                self.commands[modulename]['CHANS'].append(channame)
+                                self.modules[modulename]['CHANS'].append(channame)
                                 text = "The `%s` module is now available in the `%s` channel." % (modulename,self.channame_to_chandisplayname(channame))
                         elif command in ('!unbind', '@unbind'):
-                            if not channame in self.commands[modulename]['CHANS']:
+                            if not channame in self.modules[modulename]['CHANS']:
                                 text = "The `%s` module is not loaded in the `%s` channel." % (modulename,self.channame_to_chandisplayname(channame))
                             else:
-                                self.commands[modulename]['CHANS'].remove(channame)
+                                self.modules[modulename]['CHANS'].remove(channame)
                                 text = "The `%s` module has been removed from the `%s` channel." % (modulename,self.channame_to_chandisplayname(channame))
                         messages.append(text)
                 await self.update_bindmap()
@@ -409,114 +470,105 @@ class MattermostManagers(object):
             
             
 
-            messages = dict() # maybe rename to tasks later?
+            tasks = dict() # maybe rename to tasks later?
             addparams = False
             quoted_text = []
-            expected_subcommands = set()
-            # expected_types = set()
-            for idx, word in enumerate(message):
+            expected_types = set()
+            idx = 0
+            for idxx, word in enumerate(message):
                 '''
-                Search the rest of the list for a command again.
+                Search the rest of the list for a command (again), start of quoted text, a subcommand or a parameter.
                 '''
                 log.debug(f"Word {word} is{' not' if word not in self.binds else ''} in self.binds. addparams: {addparams}")
-                if addparams == False and word in self.binds: 
-                    ''' First search a command '''
+                if not addparams:
+                    if word in self.binds:
+                        # expected_types = set() # Reset the expected_type set
+                        # allowed_subcommands = set()
+                        idx += 1
+                        tasks[idx] = {}
+                        ''' Command keyword found'''
 
-                    log.debug(f"Command is: {word} and used by the modules {self.binds[word]}")
-                    '''
-                    Now that we have a list of modules we get the expected subcommands and expected query types.
-                    '''
-                    for module_name in self.binds[word]:
-                        messages[module_name] = {'command': word, 'parameters': [], 'options': []}
+                        log.debug(f"Keyword '{word}' found. This is a keyword used by the modules {self.binds[word]}")
+                        # Use precomputed type info from loaded modules instead of re-inspecting functions
+                        for module_name in self.binds.get(word, []):
+                            default_sub = self.modules[module_name].get('defaultcommand')
+                            cmd_entry = self.modules[module_name]['commands'].get(default_sub, {})
+                            annotationset = cmd_entry.get('types') or []
+                            # minimal task entry expected by later logic
+                            tasks[idx][module_name] = {
+                                'command': word,
+                                'parameters': [],
+                                'options': [],
+                                'subcommand': default_sub,
+                                'types': annotationset
+                            }
+                            # expected_types.update(annotationset)
+                            # allowed_subcommands.update(list(self.modules[module_name]['commands'].keys())) #XXX Has to be changed later to only allow subcommands if the keyword triggers a single module. If multiple modules are defined in self.binds the subcommands must be set there.
+                        # tasks[idx]['expected_types'] = expected_types
+                        # tasks[idx]['allowed_subcommands'] = allowed_subcommands
 
-                    ''' 
-                    We have made a dict with messages
-                    Now looking for parameters. 
-                    '''
-                    addparams = True
-                    logging.warning(f"Messages:{messages}")
-
-                
+                        ''' 
+                        We have made a dict 'tasks' with all the modules
+                        Now looking for parameters. 
+                        '''
+                        addparams = True
+                        log.warning(f"tasks:{tasks}")
                 elif addparams:
-                    '''
-                    Evaluate what input is expected. This can be a single string, multiple parameters or a long text
-                    '''
-                    allowed_types = list()
-                    for module_name in iter(messages):
-                        log.info(f"Module: {module_name}")
-                        allowed_subcommands = self.commands[module_name]['settings']['EXPECT']['subcommands'].keys()
-                        
-                        log.debug(f"Allowed subcommands: {allowed_subcommands}")
-                        # First save a allowed types into allowed_types and set the subcommand in messages.
-                        if word.lower() in allowed_subcommands:
-                            allowed_types = self.commands[module_name]['settings']['EXPECT']['subcommands'][word]['types']
-                            messages[module_name]['subcommand'] = word
-                            log.debug(f"{word} was found in {allowed_subcommands}")
-                            continue # because word was a subcommand
-                        elif not 'subcommand' in messages[module_name]:
-                            default_subcommand = next(iter(self.commands[module_name]['settings']['EXPECT']['subcommands']))
-                            allowed_types = self.commands[module_name]['settings']['EXPECT']['subcommands'][default_subcommand]['types']
-                            messages[module_name]['subcommand'] = default_subcommand
-                        
+                    # Treat the first " that preceeds a word as the start of quoted text.
+                    if word.startswith('"') and word.endswith('"') and len(word) > 1 and not quoted_text:
+                        # A single word quoted text
+                        for module in tasks[idx]:
+                            module['parameters'].append(word[1:-1]) # do not add the quote characters themselves.
+                            log.warning(f"Added parameter to {module['name']}({idx}): {word[1:-1]}")
+                        addparams = False # stop looking for more parameters
+                    elif word.startswith('"') and not quoted_text:
+                        quoted_text.append(word[1:]) if len(word) > 1 else quoted_text.append('')
+                    # Only stop when the endquote prepends a word or is a single character.
+                    elif word.endswith('"') and quoted_text:
+                        quoted_text.append(word[:-1]) # do not add the quote character itself.
+                        # Process the quoted text as a single parameter
+                        for module in tasks[idx]:
+                            module['parameters'].append(' '.join(quoted_text))
+                            log.warning(f"Added parameter to {module['name']}({idx}): {' '.join(quoted_text)}")
+                        # stop looking for more parameter and reset quoted_text variable.
+                        addparams = False
+                        quoted_text = []
+                    elif quoted_text:
+                        quoted_text.append(word)
 
-                        # Treat the first " that preceeds a word as the start of quoted text.
-                        if word.startswith('"') and not in_quoted_text:
-                            quoted_text.append(word[1:]) if len(word) > 1 else quoted_text.append('')
-                        # Only stop when the endquote prepends a word or is a single character.
-                        elif word.endswith('"') and in_quoted_text:
-                            quoted_text.append(word[:-1]) # do not add the quote character itself.
-                            # Process the quoted text as a single parameter
-                            messages[-1]['parameters'].append(' '.join(quoted_text))
-                            # stop looking for more parameter and reset quoted_text variable.
-                            addparams = False
-                            quoted_text = []
-                        elif quoted_text:
-                            quoted_text.append(word)
-                        # Ending dealing with quoted text
-                        # word is also not a subcommand, maybe it is an options?
-                        elif word.lower() in self.commands[module_name]['settings']['EXPECT']['subcommands'][messages[module_name]['subcommand']]['options']:
-                            messages[module_name]['options'].append(word)
-                        # Now assuming word can only be a parameter or stop listning for parameters.
-                        else:
-                            wordtype = checktype(word)
-                            if wordtype in allowed_types:
-                                messages[module_name]['parameters'].append(word)
-                                messages[module_name]['type'] = wordtype
-                            elif 'longstring' not in allowed_types:
-                                addparams = False # But what is you have multiple lines in messages                       
+                    elif not tasks[idx][module_name].get('parameters') and  word in list(self.modules[module_name]['commands'].keys()):
+
+                        
+                        """If this is the first parameter, check for subcommand."""
+                        for module_name in tasks[idx]:
+                            if word in self.modules[module_name]['commands']:
+                                tasks[idx][module_name]['subcommand'] = word
+
+                    else: # Expect to add a parameter
+                        """ A word can be different types in the same or different modules. A fqdn can be a hostname and a domain name, a string of numbers can be a ASN or a port number.
+                        We have to validate the word against all expected types."""
+                        validparam = False
+                        for module_name in tasks[idx]:
+                            subcommand = tasks[idx][module_name]['subcommand']
+                            for Validator in self.modules[module_name]['commands'][subcommand].get('types', []):
+                                try:
+                                    parameter = Validator(word)
+                                except ValueError:
+                                    log.warning(f"Validation failed for {word} against {Validator.__name__}")
+                                else:
+                                    log.info(f"Validation succeeded for {word} against {Validator.__name__}")
+                                    tasks[idx][module_name]['parameters'].append(parameter)
+                                    log.warning(f"Added parameter to {module_name}({idx}): {parameter} ({type(parameter)})")
+                                    validparam = True
+                        if not validparam:
+                            log.warning(f"Failed to validate parameter {word} for any type in {module_name}({idx})")
+                            addparams = False # stop looking for more parameters
                 else:
-                    log.info(f"\"{word}\" is not a keyword and I am not expecting parameters.")
+                    log.info(f"This is very odd. \"{word}\" is not a command keyword and I am not expecting parameters.")
             
-            log.warning(f"Finished making tasks: {messages}")        
-  
-            #   log.info("---")
-            #             log.info(f"Module {module_name} has settings: {self.commands[module_name].keys()}")
-            #             log.info(f"Module {module_name} has subcommands: {self.commands[module_name]['EXPECT']['subcommands'].keys()}")
-            #             expected_subcommands.update(self.commands[module_name]['EXPECT']['subcommands'].keys())
-            #             default_subcommand = next(iter(self.commands[module_name]['EXPECT']['subcommands']))
-            #             default_types  = self.commands[module_name]['EXPECT']['subcommands'][default_subcommand]['types']
-            #             expected_types = default_types
-            #                                     messages[module_name]['subcommand'] = default_subcommand
+                log.warning(f"Finished making tasks: {tasks}")        
+            """ End of message parsing loop """
 
-            #             log.info(f"Default subcommands \"{default_subcommand}\"")
-            #             log.info(f"Default subcommand has types \"{default_types}\"")
-            #             log.info(f"Expected types \"{expected_types}\"")
-            #             log.info("---")
-
-            # for mline in messagelines:
-            #     log.warning(f"Message: {mline}")
-            #     addparams = False
-            #     message = mline.split() # list will all words on one line
-            #     for idx,word in enumerate(message):
-            #         log.debug(f"(({word in self.binds}) and ({message[idx-1] not in options.Matterbot['helpcmds']} and {message[idx-1] not in options.Matterbot['mapcmds']} ) \
-            #          or ({word in options.Matterbot['helpcmds']}) or (({word in options.Matterbot['mapcmds']}) and ({message[idx-1] not in options.Matterbot['helpcmds'] }))  )")
-            #         if ((word in self.binds) and (message[idx-1] not in options.Matterbot['helpcmds'] and message[idx-1] not in options.Matterbot['mapcmds'] ) # In this case hand over the word to elif \
-            #              or (word in options.Matterbot['helpcmds']) or ((word in options.Matterbot['mapcmds']) and (message[idx-1] not in options.Matterbot['helpcmds'] ))  ): # word is a helpcmd or bind command
-            #             messages.append({'command':word,'parameters':[]})
-            #             addparams = True
-            #         elif addparams:
-            #             messages[-1]['parameters'].append(word)
-            # log.debug(f"Messages: {messages}")
 
             files = []
             log.debug(f"Check on post. Type is {type(post)}, content:{post}")
@@ -524,51 +576,143 @@ class MattermostManagers(object):
                 if 'files' in post['metadata']:
                     if len(post['metadata']['files']):
                         files = post['metadata']['files']
-            with concurrent.futures.ThreadPoolExecutor(max_workers=None) as executor:
-                logging.debug(f"Messages to process: {messages}")
-                results = []                        
-                for module_name in messages:
-                    logging.debug(f"Processing module: {module_name} with messages: {messages[module_name]}")
-                    if self.isallowed_module(userid, module_name, chaninfo):
-                        try:
-                            logging.debug(f"Queueing module: {module_name}")
-                            results.append(executor.submit(self.commands[module_name]['process'], messages[module_name], channame, username, files, self.mmDriver))
-                        except Exception as e:
-                            text = f"An error occurred within module: {module_name}: {+str(type(e))}: {e}"
-                            await self.send_message(chanid, text, rootid)
 
-                for _ in concurrent.futures.as_completed(results):
-                    logging.debug(f"Module completed: {results}")
-                    try:
-                        result = _.result()
-                        if result and 'messages' in result:
-                            for message in result['messages']:
-                                if 'text' in message:
-                                    text = message['text']
-                                if 'uploads' in message:
-                                    if message['uploads'] != None:
-                                        file_ids = []
-                                        for upload in message['uploads']:
-                                            filename = upload['filename']
-                                            payload = upload['bytes']
-                                            if not isinstance(payload, (bytes, bytearray)):
-                                                payload = payload.encode()
-                                            file_id = self.mmDriver.files.upload_file(
-                                                channel_id=chanid,
-                                                files={'files': (filename, payload)}
-                                            )['file_infos'][0]['id']
-                                            file_ids.append(file_id)
-                                        self.mmDriver.posts.create_post(options={'channel_id': chanid,
-                                                                                'message': text,
-                                                                                'file_ids': file_ids,
-                                                                                })
+            """
+            We can have different tasks which might call serveral modules. idx is the task number but because idx is 
+            already set to the last task we use sub here instead.            
+            """
+            with concurrent.futures.ThreadPoolExecutor(max_workers=None) as executor:
+                log.debug(f"tasks to process: {tasks}")
+                results = []       
+                for idx in iter(tasks):
+                    for module_name in tasks[idx]:
+                        subcommand = tasks[idx][module_name]['subcommand']
+                        log.debug(f"Processing module: {module_name} with subtasks: {tasks[idx][module_name]}, executing {subcommand}.")
+                        if self.isallowed_module(userid, module_name, chaninfo):
+                            try:
+                                log.debug(f"Queueing module: {module_name}")
+
+                                results.append(executor.submit(
+                                    self.modules[module_name]['commands'][subcommand]['function'], 
+                                    tasks[idx][module_name]['parameters'], tasks[idx][module_name].get('options', []),
+                                    files=files,
+                                    modules=self.modules
+                                   ))
+                            except Exception as e:
+                                text = f"An error occurred within module: {module_name}: {+str(type(e))}: {e}"
+                                await self.send_message(chanid, text, rootid)
+
+                    """
+                    Data is received from the modules in the dict format:
+
+                    {
+                        "source":"full service name",
+                        "responses": [
+                            {
+                                "paragraph":"subtitle",
+                                "preamble":"introduction to source",
+                                "data": [
+                                    {"category":"Indicator", "datapoint":"IP address", "stix-type":"ipv4-addr", "value":"value"},
+                                    {"category":"Indicator", "datapoint":"datapoint", "value":"value"},
+                                    {"category":"Indicator", "datapoint":"Comment", "value":"Free text giving context on the indicator."}
+                                    
+                                ]
+                            }
+                        ]
+                    }
+                    
+                    No hit:
+                    {
+                        "source":"provider",
+                        "responses": []
+                    }
+
+                    category, datapoint and value are taken from the source. Only stix-type
+                    is the same across modules for values of the same type.
+
+                    Eventually converts to a message text and possibly an attachment.
+                    The text can have multiple paragraph with a short introduction of the source.
+
+                    Output data in the format structure:
+
+                    module_name
+                    - service name
+                    - preamble
+                        - paragraph
+                            - data set
+                                - category
+                                    - datapoint
+                                    - stix-type
+                                        - value
+                    Can be converted to output:
+                    
+                    ** Service name **
+                    |*Indicator 1*|            |
+                    |-------------|------------|
+                    |IP address   | 1.1.1.1    |
+                    |Comment      | Context    |
+
+                    |*Indicator 2*|            |
+                    |-------------|------------|
+                    |IP address   | 1.1.1.1    |
+                    |Comment      | Context    |
+
+                    
+                    """
+                    for _ in concurrent.futures.as_completed(results):
+                        try:
+                            result = _.result()
+                            if not result:
+                                continue
+
+                            # If module returned structured data (source/responses), convert to standard 'messages' list
+                            if isinstance(result, dict) and 'source' in result and 'responses' in result:
+                                result = format_as_tables(result)
+                            if result and 'messages' in result:
+                                for message in result['messages']:
+                                    text = message.get('text', '')
+                                    props = message.get('props')
+                                    # Handle uploads if present
+                                    if 'uploads' in message:
+                                        if message['uploads'] is not None:
+                                            file_ids = []
+                                            for upload in message['uploads']:
+                                                filename = upload['filename']
+                                                payload = upload['bytes']
+                                                if not isinstance(payload, (bytes, bytearray)):
+                                                    payload = payload.encode()
+                                                file_id = self.mmDriver.files.upload_file(
+                                                    channel_id=chanid,
+                                                    files={'files': (filename, payload)}
+                                                )['file_infos'][0]['id']
+                                                file_ids.append(file_id)
+                                            post_opts = {'channel_id': chanid, 'message': text, 'file_ids': file_ids}
+                                            if props:
+                                                post_opts['props'] = props
+                                            if rootid:
+                                                post_opts['root_id'] = rootid
+                                            self.mmDriver.posts.create_post(options=post_opts)
+                                        else:
+                                            # No uploads but props may be present
+                                            if props:
+                                                post_opts = {'channel_id': chanid, 'message': text, 'props': props}
+                                                if rootid:
+                                                    post_opts['root_id'] = rootid
+                                                self.mmDriver.posts.create_post(options=post_opts)
+                                            else:
+                                                await self.send_message(chanid, text, rootid)
                                     else:
-                                        await self.send_message(chanid, text, rootid)
-                                else:
-                                    await self.send_message(chanid, text, rootid)
-                    except Exception as e:
-                        text = 'A Python error occurred: '+str(type(e))+': '+str(e)
-                        await self.send_message(chanid, text, rootid)
+                                        # No uploads: if there are props, create a post with props to attach the attachment
+                                        if props:
+                                            post_opts = {'channel_id': chanid, 'message': text, 'props': props}
+                                            if rootid:
+                                                post_opts['root_id'] = rootid
+                                            self.mmDriver.posts.create_post(options=post_opts)
+                                        else:
+                                            await self.send_message(chanid, text, rootid)
+                        except Exception as e:
+                            text = 'A Python error occurred: '+str(type(e))+': '+str(e)
+                            await self.send_message(chanid, text, rootid)
 
 if __name__ == '__main__' :
     '''
@@ -586,10 +730,38 @@ if __name__ == '__main__' :
     options, unknown = parser.parse_known_args()
     options.Matterbot = ast.literal_eval(options.Matterbot)
     options.Modules = ast.literal_eval(options.Modules)
+
+    # configure colored logging only for direct runs
+    try:
+        import colorlog  # import here so importing the module doesn't require colorlog
+        handler = colorlog.StreamHandler()
+        handler.setFormatter(colorlog.ColoredFormatter(
+            "%(log_color)s%(levelname)-8s%(reset)s %(blue)s%(name)s%(reset)s: %(message)s",
+            log_colors={
+                'DEBUG': 'cyan',
+                'INFO': 'green',
+                'WARNING': 'yellow',
+                'ERROR': 'red',
+                'CRITICAL': 'bold_red',
+            }
+        ))
+        logging.root.handlers = []
+        logging.root.addHandler(handler)
+    except Exception:
+        # fallback: plain stream handler if colorlog is not available
+        handler = logging.StreamHandler()
+        logging.root.handlers = []
+        logging.root.addHandler(handler)
+
+    logging.root.setLevel(logging.DEBUG if options.debug else logging.INFO)
+
+    # file logging when not in debug mode
     if not options.debug:
-        logging.basicConfig(filename=options.Matterbot['logfile'], format='%(levelname)s - %(name)s - %(asctime)s - %(message)s')
+        logging.basicConfig(filename=options.Matterbot['logfile'],
+                            format='%(levelname)s - %(name)s - %(asctime)s - %(message)s')
     else:
         logging.basicConfig(level=0)
+
     log = logging.getLogger('MatterAPI')
     log.info('Starting MatterBot')
     mm = MattermostManagers()

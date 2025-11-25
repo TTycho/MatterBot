@@ -9,17 +9,21 @@ from typing import Dict, Any
 def format_as_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a structured module result into a dict with 'messages' key.
 
-    Expected input shape:
-    {
-      'source': 'service name',
-      'responses': [ { 'preamble': '...', 'paragraph': '...', 'data': [ ... ] }, ... ]
-    }
+    Produces:
+    - A markdown table in the message 'text' (fallback method)
+    - A Mattermost-style attachment (props.attachments) that contains fields:
+      * Category/Subcategory rows as full-width (short: False)
+      * Datapoint/value rows as short fields (short: True) so they render side-by-side
 
-    Output:
-    { 'messages': [ { 'text': '...'}, ... ] }
+    This gives both a readable table and a column-like layout via attachment fields.
     """
+    def _escape_cell(x):
+        return str(x).replace('|', r'\|') if x is not None else ''
+
     msgs = []
     source = result.get('source', '')
+    author = result.get('module', 'matterbot')
+
     for resp in result.get('responses', []):
         parts = []
         preamble = resp.get('preamble')
@@ -29,42 +33,78 @@ def format_as_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         if paragraph:
             parts.append(f"*{paragraph}*")
 
-        # Collect datapoints
+        data_rows = []
+        # build attachment fields in parallel to the markdown table
+        fields = []
+        last_cat_sub = (None, None)
+
         for data in resp.get('data', []):
-            category = data.get('category', '')
-            subcategory = data.get('subcategory', '')
+            category = data.get('category', '') or ''
+            subcategory = data.get('subcategory', '') or ''
             datapoint = data.get('datapoint') or data.get('name') or ''
             value = data.get('value', '')
-            stix = data.get('stix-type') or data.get('stix_type') or ''
+            # stix = data.get('stix-type') or data.get('stix_type') or ''
 
-            # Build a compact category/subcategory representation
-            catpart = ''
-            if category and subcategory:
-                catpart = f"{category}/{subcategory}"
-            elif category:
-                catpart = category
-            elif subcategory:
-                catpart = subcategory
+            # markdown table row
+            row = "| {} | {} |".format(
+                # _escape_cell(category),
+                # _escape_cell(subcategory),
+                _escape_cell(datapoint),
+                _escape_cell(value),
+                # _escape_cell(stix),
+            )
+            data_rows.append(row)
 
-            line = f"- {datapoint}: {value}"
-            if catpart:
-                line += f" ({catpart})"
-            if stix:
-                line += f" [{stix}]"
-            parts.append(line)
+            # Add a full-width field when category/subcategory changes to act as a section header
+            cat_sub = (category, subcategory)
+            if cat_sub != last_cat_sub:
+                header_title = subcategory if subcategory else category
+                header_sub = f" / {subcategory}" if subcategory else ""
+                fields.append({
+                    "short": False,
+                    "title": f"{header_title}",
+                    "value": ""  # optional intro for the section
+                })
+                last_cat_sub = cat_sub
 
-        body = "\n".join(parts).strip()
-        header = f"** {source} **" if source else ''
-        text = header + ("\n\n" + body if body else "")
-        msgs.append({'text': text})
+            # Add the datapoint as a short field (title) with the value as content so pairs render side-by-side
+            value_display = str(value) if value is not None else ""
+            # if stix:
+            #     value_display = f"{value_display} ({stix})"
+            fields.append({
+                "short": True,
+                "title": str(datapoint) or "(value)",
+                "value": value_display
+            })
 
-    # Return structure:
-    # {
-    #   'messages': [
-    #       { 'text': '<string>' },   # each message is a dict containing at least a 'text' string
-    #       ...
-    #   ]
-    # }
-    # Callers iterate over result['messages'] and render/send each message's 'text'.
-    return {'messages': msgs}
+        # build markdown table (fallback / visible in message body)
+        if data_rows:
+            table_header = "| Category | Subcategory | Datapoint | Value | STIX |"
+            table_sep = "|---|---|---|---|---|"
+            table_md = "\n".join([table_header, table_sep] + data_rows)
+            parts.append(table_md)
+        else:
+            parts.append("_no data returned_")
+
+        body = "\n\n".join(parts).strip()
+        source_header = f"** {source} **" if source else ""
+        text = source_header + ("\n\n" + body if body else "")
+
+        # Attachment: include preamble/paragraph in attachment text and fields for column-like layout
+        attachment = {
+            "fallback": text,
+            "author_name": author,
+            "title": paragraph or source or "Result",
+            "text": preamble or "",
+            "fields": fields
+        }
+
+        msgs.append({
+            # "text": text,
+            "props": {
+                "attachments": [attachment]
+            }
+        })
+
+    return {"messages": msgs}
 

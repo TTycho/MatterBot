@@ -1,19 +1,60 @@
 import logging
-from pathlib import Path
-# try:
-#     from commands.help import defaults as settings
-# except ModuleNotFoundError: # local test run
-#     import defaults as settings
-#     if Path('settings.py').is_file():
-#         import settings
-# else:
-#     if Path('commands/help/settings.py').is_file():
-#         try:
-#             from commands.hybridanalysis import settings
-#         except ModuleNotFoundError: # local test run
-#             import settings
+from typing import List, Literal, TypedDict
+from core.typevalidators import Domain, IPv4, LongString, String
 
-log = logging.getLogger('HelpCommand')
+class commands():
+    """
+    The help module give help on al other modules.
+    """
+    def __init__(self):
+        self.module_name = self.__class__.__module__.split('.')[-1]
+
+    def help(self, parameters: List[String], options: str, modules=None, *args, **kwargs) -> dict:
+        """Default. Will give help on any known command."""
+        logging.warning(f"Modules is: {kwargs.get('modules')} or {modules}")
+        
+        data = {
+            "module": __package__, 
+            "source": "Matterbot Help Module", 
+            "responses": []
+            }
+
+        if not parameters:
+            logging.warning("No parameters provided in the command.")
+
+            for module_name, mod in modules.items():
+                doc = mod.get('doc', 'Module has no documentation')
+                data['responses'].append({"category":"Command", "subcategory":"", 'datapoint': module_name, 'value': doc})
+
+
+
+            pass
+        else:
+            logging.info(f"Help requested with parameters: {parameters}")
+            pass
+
+        return data
+
+    def extra(self, parameters: List[None], options: str, modules={}):
+        """Help without parameters gives you a list of all commands."""
+        
+        data = {
+            "module": __package__, 
+            "source": "Matterbot Help Module", 
+            "responses": []
+            }
+
+        for module_name, mod in modules.items():
+            doc = mod.get('doc', 'Module has no documentation')
+            data['responses'].append({'datapoint': module_name, 'value': doc})
+
+        logging.info("Prepared help data with %d entries", len(data['data']))
+        pass
+        pass
+
+    def abc(self, parameters: List[Domain|IPv4], options: str, channel: str, username: str, files: list, conn):
+        pass
+
 
 def process(task, channame, username, files, mmDriver):
     """
