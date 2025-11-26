@@ -172,23 +172,6 @@ class MattermostManagers(object):
                 except:
                     log.error("An error occurred writing the bindmap file: %s" % (options.Matterbot['bindmap'],))
         
-        # # Resolve function calls and update the module help
-        # for root, dirs, files in os.walk(modulepath):
-        #     for module in fnmatch.filter(files, "command.py"):
-        #         module_name = root.split('/')[-1].lower()
-        #         module = importlib.import_module(module_name + '.' + 'command')
-        #         defaults = importlib.import_module(module_name + '.' + 'defaults')
-        #         if hasattr(defaults, 'HELP'):
-        #             HELP = defaults.HELP
-        #         if 'settings.py' in files:
-        #             overridesettings = importlib.import_module(module_name + '.' + 'settings')    
-        #             if hasattr(overridesettings, 'HELP'):
-        #                 HELP = overridesettings.HELP
-        #         self.modules[module_name]['process'] = getattr(module, 'process')
-        #         self.modules[module_name]['help'] = HELP
-
-                
-        # self.binds = sorted(list(set(self.binds)))
 
         # Start the websocket
         self.mmDriver.init_websocket(self.handle_raw_message)
@@ -462,7 +445,11 @@ class MattermostManagers(object):
             quoted_text = []
             expected_types = set()
             idx = 0
-            for idxx, word in enumerate(message):
+            message_idx = 0
+            #for idxx, word in enumerate(message):
+            while message_idx < len(message):
+                word = message[message_idx]
+                message_idx += 1
                 '''
                 Search the rest of the list for a command (again), start of quoted text, a subcommand or a parameter.
                 '''
@@ -500,56 +487,68 @@ class MattermostManagers(object):
                         '''
                         addparams = True
                         log.warning(f"tasks:{tasks}")
+
                 elif addparams:
                     # Treat the first " that preceeds a word as the start of quoted text.
                     if word.startswith('"') and word.endswith('"') and len(word) > 1 and not quoted_text:
                         # A single word quoted text
-                        for module in tasks[idx]:
-                            module['parameters'].append(word[1:-1]) # do not add the quote characters themselves.
-                            log.warning(f"Added parameter to {module['name']}({idx}): {word[1:-1]}")
-                        addparams = False # stop looking for more parameters
+                        param_value = word[1:-1]
+                        for module_name, task_entry in tasks[idx].items():
+                            task_entry['parameters'].append(param_value)
+                            log.warning(f"Added parameter to {module_name}({idx}): {param_value}")
+                        addparams = False  # stop looking for more parameters
                     elif word.startswith('"') and not quoted_text:
-                        quoted_text.append(word[1:]) if len(word) > 1 else quoted_text.append('')
+                        quoted_text.append(word[1:] if len(word) > 1 else '')
                     # Only stop when the endquote prepends a word or is a single character.
                     elif word.endswith('"') and quoted_text:
-                        quoted_text.append(word[:-1]) # do not add the quote character itself.
+                        quoted_text.append(word[:-1])  # do not add the quote character itself
+                        param_value = ' '.join(quoted_text)
                         # Process the quoted text as a single parameter
-                        for module in tasks[idx]:
-                            module['parameters'].append(' '.join(quoted_text))
-                            log.warning(f"Added parameter to {module['name']}({idx}): {' '.join(quoted_text)}")
-                        # stop looking for more parameter and reset quoted_text variable.
+                        for module_name, task_entry in tasks[idx].items():
+                            task_entry['parameters'].append(param_value)
+                            log.warning(f"Added parameter to {module_name}({idx}): {param_value}")
+                        # stop looking for more parameters and reset quoted_text variable.
                         addparams = False
                         quoted_text = []
                     elif quoted_text:
                         quoted_text.append(word)
 
-                    elif not tasks[idx][module_name].get('parameters') and  word in list(self.modules[module_name]['commands'].keys()):
-
-                        
+                    # Check if this word is a subcommand (only if no parameters yet)
+                    elif any(
+                        not task_entry.get('parameters') and word in self.modules[module_name]['commands']
+                        for module_name, task_entry in tasks[idx].items()
+                    ):
                         """If this is the first parameter, check for subcommand."""
-                        for module_name in tasks[idx]:
+                        for module_name, task_entry in tasks[idx].items():
                             if word in self.modules[module_name]['commands']:
-                                tasks[idx][module_name]['subcommand'] = word
-
-                    else: # Expect to add a parameter
-                        """ A word can be different types in the same or different modules. A fqdn can be a hostname and a domain name, a string of numbers can be a ASN or a port number.
-                        We have to validate the word against all expected types."""
+                                task_entry['subcommand'] = word
+                                # Update expected types for this subcommand
+                                task_entry['types'] = self.modules[module_name]['commands'][word].get('types', [])
+                                log.debug(f"Set subcommand for {module_name}({idx}) to {word}")
+                        # Keep addparams = True so following words are treated as parameters
+                    else:
+                        # Expect to add a parameter: validate against all expected types
                         validparam = False
-                        for module_name in tasks[idx]:
-                            subcommand = tasks[idx][module_name]['subcommand']
+                        for module_name, task_entry in tasks[idx].items():
+                            subcommand = task_entry['subcommand']
                             for Validator in self.modules[module_name]['commands'][subcommand].get('types', []):
                                 try:
                                     parameter = Validator(word)
                                 except ValueError:
-                                    log.warning(f"Validation failed for {word} against {Validator.__name__}")
+                                    log.debug(f"Validation failed for {word} against {Validator.__name__} in {module_name}")
                                 else:
-                                    log.info(f"Validation succeeded for {word} against {Validator.__name__}")
-                                    tasks[idx][module_name]['parameters'].append(parameter)
+                                    log.info(f"Validation succeeded for {word} against {Validator.__name__} in {module_name}")
+                                    task_entry['parameters'].append(parameter)
                                     log.warning(f"Added parameter to {module_name}({idx}): {parameter} ({type(parameter)})")
                                     validparam = True
                         if not validparam:
-                            log.warning(f"Failed to validate parameter {word} for any type in {module_name}({idx})")
-                            addparams = False # stop looking for more parameters
+                            log.warning(f"Failed to validate parameter {word} for any type in tasks[{idx}]")
+                            if word in self.binds:
+                                # Next command keyword found; stop looking for parameters for this task
+                                log.info(f"Next command keyword '{word}' found while expecting parameters; stopping parameter collection for task {idx} and rewinding one step.")
+                                message_idx -= 1  # rewind one step to reprocess this word as a command keyword
+                            addparams = False  # stop looking for more parameters
+
                 else:
                     log.info(f"This is very odd. \"{word}\" is not a command keyword and I am not expecting parameters.")
             
@@ -570,21 +569,23 @@ class MattermostManagers(object):
             """
             with concurrent.futures.ThreadPoolExecutor(max_workers=None) as executor:
                 log.debug(f"tasks to process: {tasks}")
-                results = []       
                 for idx in iter(tasks):
+                    # NEW: reset results per task index
+                    results = []
+
                     for module_name in tasks[idx]:
                         subcommand = tasks[idx][module_name]['subcommand']
                         log.debug(f"Processing module: {module_name} with subtasks: {tasks[idx][module_name]}, executing {subcommand}.")
                         if self.isallowed_module(userid, module_name, chaninfo):
                             try:
                                 log.debug(f"Queueing module: {module_name}")
-
                                 results.append(executor.submit(
-                                    self.modules[module_name]['commands'][subcommand]['function'], 
-                                    tasks[idx][module_name]['parameters'], tasks[idx][module_name].get('options', []),
+                                    self.modules[module_name]['commands'][subcommand]['function'],
+                                    tasks[idx][module_name]['parameters'],
+                                    tasks[idx][module_name].get('options', []),
                                     files=files,
-                                    modules=self.modules
-                                   ))
+                                    modules=self.modules,
+                                ))
                             except Exception as e:
                                 text = f"An error occurred within module: {module_name}: {+str(type(e))}: {e}"
                                 await self.send_message(chanid, text, rootid)
