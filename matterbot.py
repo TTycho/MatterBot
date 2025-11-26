@@ -19,11 +19,9 @@ from typing import get_type_hints, get_origin, get_args
 
 from mattermostdriver import Driver
 from core import helpers
-from core.helpers import checktype
 from core import typevalidators
 from core.formatters import format_as_tables
 
-import colorlog
 
 class TokenAuth():
     def __call__(self, r):
@@ -90,58 +88,49 @@ class MattermostManagers(object):
 
 
 
-        # Load any new modules by listng directories under _modulepath_
-        for root, dirs, files in os.walk(modulepath):    
-            """
-            If a directory contains a command.py file, load the functions in the commands class into self.module[module_name]['commands']
-            also save ['doc'] and ['defaultcommand']. The actual function is stored in self.module[module_name]['commands'][subcommand]['function']
+        # Load any new modules by listing directories under _modulepath_
+        for root, dirs, files in os.walk(modulepath):
+            """Auto-discover command modules and register their public callables.
+
+            For each directory containing a ``command.py`` file we import the
+            module and collect all functions that do not
+            start with ``_``. These are treated as subcommands and stored in
+            ``self.modules[module_name]['commands']``.
             """
             if "command.py" in files:
                 module_name = root.split('/')[-1].lower()
                 module = importlib.import_module(module_name + '.' + 'command', package=module_name)
 
                 self.modules[module_name] = {}
-                # self.modules[module_name]['process'] = getattr(module, 'process') # old function
                 log.warning(f"Module: {module_name}")
-                subcommands = getattr(module, 'commands')
-                log.warning(f"Class subcommands: {subcommands}")
-                """
-                Get documentation from the docstrings
-                """
-                self.modules[module_name]['doc'] = inspect.getdoc(subcommands)
-                """
-                Make the first function in the commands class the default command
-                """
-                # inspect.getmembers() sorts it. We filter out _functions seperately
-                self.modules[module_name]['defaultcommand'] = next(iter([
-                    name 
-                    for name, parent in subcommands.__dict__.items()
-                    if not name.startswith('_')
-                ]), None)
 
-                """
-                The functions in the commands class will become subcommands except the `__special` and `_private` ones
-                """
-                # instantiate the commands class so we can store bound methods
-                inst = subcommands()
-                self.modules[module_name]['instance'] = inst
-                self.modules[module_name]['class'] = subcommands
-                 # Build commands dict by iterating functions and extracting metadata (do not use statements inside a dict-comprehension)
+                # Use the module itself as the documentation source (module docstring)
+                self.modules[module_name]['doc'] = inspect.getdoc(module)
+
+                # Determine default command: first public callable in the module
+                public_callables = [
+                    name for name, obj in module.__dict__.items()
+                    if inspect.isfunction(obj)
+                    and not name.startswith('_')
+                    and getattr(obj, "__module__", None) == getattr(module, "__name__", None)
+                ]
+                self.modules[module_name]['defaultcommand'] = public_callables[0] if public_callables else None
+
+                # Build commands dict using the already computed public_callables
                 self.modules[module_name]['commands'] = {}
-                for name, func in inspect.getmembers(subcommands, predicate=inspect.isfunction):
-                    if name.startswith('_'):
-                        continue
-                    # Resolve forward refs using the function's globals
-                    hints = get_type_hints(func, globalns=getattr(func, "__globals__", {}))
-                    annotations = hints.get('parameters', None)
+                for name in public_callables:
+                    func = getattr(module, name)
+
+                    ann = getattr(func, "__annotations__", {})
+                    # We only care about the 'parameters' annotation (List[...]) used for argument typing
+                    annotations = ann.get("parameters")
                     annotationset = helpers.expand_annotation(annotations)
-                    bound = getattr(inst, name)
-                    self.modules[module_name]['commands'][name.lower()] = {
+                    self.modules[module_name]['commands'][name] = {
                         "originalname": name,
-                        # "doc": inspect.getdoc(func),
+                        "doc": inspect.getdoc(func),
                         "annotations": annotations,
                         "types": annotationset,
-                        "function": bound
+                        "function": func,
                     }
 
                 log.debug(f"Allowed subcommands: {self.modules[module_name]['commands']}")
@@ -177,8 +166,6 @@ class MattermostManagers(object):
                 try:
                     with open(options.Matterbot['bindmap'],'w') as f:
                         log.warning(f"""
-                                    Something goes wrong here.
-                                    self.modules is: {self.modules}
                                     Bindmap is: {self.binds}
                                     """)
                         json.dump(self.binds,f)
@@ -602,63 +589,7 @@ class MattermostManagers(object):
                                 text = f"An error occurred within module: {module_name}: {+str(type(e))}: {e}"
                                 await self.send_message(chanid, text, rootid)
 
-                    """
-                    Data is received from the modules in the dict format:
-
-                    {
-                        "source":"full service name",
-                        "responses": [
-                            {
-                                "paragraph":"subtitle",
-                                "preamble":"introduction to source",
-                                "data": [
-                                    {"category":"Indicator", "datapoint":"IP address", "stix-type":"ipv4-addr", "value":"value"},
-                                    {"category":"Indicator", "datapoint":"datapoint", "value":"value"},
-                                    {"category":"Indicator", "datapoint":"Comment", "value":"Free text giving context on the indicator."}
-                                    
-                                ]
-                            }
-                        ]
-                    }
-                    
-                    No hit:
-                    {
-                        "source":"provider",
-                        "responses": []
-                    }
-
-                    category, datapoint and value are taken from the source. Only stix-type
-                    is the same across modules for values of the same type.
-
-                    Eventually converts to a message text and possibly an attachment.
-                    The text can have multiple paragraph with a short introduction of the source.
-
-                    Output data in the format structure:
-
-                    module_name
-                    - service name
-                    - preamble
-                        - paragraph
-                            - data set
-                                - category
-                                    - datapoint
-                                    - stix-type
-                                        - value
-                    Can be converted to output:
-                    
-                    ** Service name **
-                    |*Indicator 1*|            |
-                    |-------------|------------|
-                    |IP address   | 1.1.1.1    |
-                    |Comment      | Context    |
-
-                    |*Indicator 2*|            |
-                    |-------------|------------|
-                    |IP address   | 1.1.1.1    |
-                    |Comment      | Context    |
-
-                    
-                    """
+                    # Collect and process results
                     for _ in concurrent.futures.as_completed(results):
                         try:
                             result = _.result()
@@ -718,11 +649,13 @@ if __name__ == '__main__' :
     '''
     Interactive run from the command-line
     '''
-    parser = configargparse.ArgParser(config_file_parser_class=configargparse.YAMLConfigFileParser,
-                                      description='Matterbot loads modules '
-                                                  'and sends their output '
-                                                  'to Mattermost.',
-                                                  default_config_files=['config.yaml'])
+    parser = configargparse.ArgParser(
+        config_file_parser_class=configargparse.YAMLConfigFileParser,
+        description='Matterbot loads modules '
+                    'and sends their output '
+                    'to Mattermost.',
+        default_config_files=['config.yaml']
+    )
     parser.add('--Matterbot', type=str, help='MatterBot configuration, as a dictionary (see YAML config)')
     parser.add('--Modules', type=str, help='Modules configuration, as a dictionary (see YAML config)')
     parser.add('-v','--debug', default=False, action='store_true', help='Enable debug mode and log to foreground')
@@ -731,36 +664,20 @@ if __name__ == '__main__' :
     options.Matterbot = ast.literal_eval(options.Matterbot)
     options.Modules = ast.literal_eval(options.Modules)
 
-    # configure colored logging only for direct runs
-    try:
-        import colorlog  # import here so importing the module doesn't require colorlog
-        handler = colorlog.StreamHandler()
-        handler.setFormatter(colorlog.ColoredFormatter(
-            "%(log_color)s%(levelname)-8s%(reset)s %(blue)s%(name)s%(reset)s: %(message)s",
-            log_colors={
-                'DEBUG': 'cyan',
-                'INFO': 'green',
-                'WARNING': 'yellow',
-                'ERROR': 'red',
-                'CRITICAL': 'bold_red',
-            }
-        ))
-        logging.root.handlers = []
-        logging.root.addHandler(handler)
-    except Exception:
-        # fallback: plain stream handler if colorlog is not available
-        handler = logging.StreamHandler()
-        logging.root.handlers = []
-        logging.root.addHandler(handler)
-
-    logging.root.setLevel(logging.DEBUG if options.debug else logging.INFO)
-
-    # file logging when not in debug mode
+    # Restore a simple, pre-colorlog-style logging setup
     if not options.debug:
-        logging.basicConfig(filename=options.Matterbot['logfile'],
-                            format='%(levelname)s - %(name)s - %(asctime)s - %(message)s')
+        # Log to file in normal mode
+        logging.basicConfig(
+            filename=options.Matterbot['logfile'],
+            level=logging.INFO,
+            format='%(levelname)s - %(name)s - %(asctime)s - %(message)s'
+        )
     else:
-        logging.basicConfig(level=0)
+        # Log to stderr in debug mode
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(levelname)s - %(name)s - %(asctime)s - %(message)s'
+        )
 
     log = logging.getLogger('MatterAPI')
     log.info('Starting MatterBot')

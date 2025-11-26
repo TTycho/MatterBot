@@ -1,167 +1,246 @@
-#!/usr/bin/env python3
-
 import logging
-import validators
-
-def checktype(word):
-    """
-    Check the type of a word using the validators package.
-    Args:
-        word (str): The word to check.
-
-    Returns:
-        str: The matched type or None if no match.
-    """
-    # Check for IPv4 address
-    if validators.ipv4(word):
-        if validators.ipv4(word, private=True):
-            logging.debug("This is a private IPv4 address.")
-            return 'private'
-        elif validators.ipv4(word, strict=True):
-            logging.debug("This is a CIDR notation.")
-            return 'cidr'
-        else:
-            logging.debug("This is a public IPv4 address.")
-            return 'ipv4'
-
-    # Check for IPv6 address
-    if validators.ipv6(word):
-        logging.debug("This is an IPv6 address.")
-        return 'ipv6'
-
-    # Check for URL
-    if validators.url(word):
-            logging.debug("This is a URL.")
-            return 'url'
-
-    # Check for domain
-    if validators.domain(word):
-        logging.debug("This is a domain.")
-        return 'domain'
-
-    # Check for hostname
-    if validators.hostname(word):
-        logging.debug("This is a hostname.")
-        return 'hostname'
-    # Check for MAC address
-    if validators.mac_address(word):
-        logging.debug("This is a MAC address.")
-        return 'mac_address'
-
-
-    # Check for email address
-    if validators.email(word):
-        logging.debug("This is an email address.")
-        return 'email'
-
-    # Check for MD5 hash
-    if validators.md5(word):
-        logging.debug("This is an MD5 hash.")
-        return 'md5_hash'
-
-    # Check for SHA1 hash
-    if validators.sha1(word):
-        logging.debug("This is a SHA1 hash.")
-        return 'sha1_hash'
-
-    # Check for SHA256 hash
-    if validators.sha256(word):
-        logging.debug("This is a SHA256 hash.")
-        return 'sha256_hash'
-
-    # Check for SHA512 hash
-    if validators.sha512(word):
-        logging.debug("This is a SHA512 hash.")
-        return 'sha512_hash'
-    # Check for UUID
-    if validators.uuid(word):
-        logging.debug("This is a UUID.")
-        return 'uuid'
-
-    # Check for ASN
-    if word.isdigit() or word.startswith("AS") or word.startswith("ASN"):
-        number = word[2:] if word.startswith("AS") else word[3:] if word.startswith("ASN") else word if word.isdigit() else None
-        if number.isdigit() and 1000 <= int(number) <= 500000:
-            logging.debug("This is possibly an ASN.")
-            return 'asn'
-
-    # Check for Bitcoin address
-    if validators.btc_address(word):
-        logging.debug("This is a Bitcoin address.")
-        return 'btc'
-
-    # If no type matches, return None
-    logging.debug(f"No matching type found for word: {word}")
-    return None
-
-
-# ...existing code...
-import typing
-import inspect
-
-from typing import get_type_hints, get_origin, get_args
-from core import typevalidators
-
-def validatetype(modules, module_name, subcommand, value):
-    pass
-    return True
-
-def extract_allowed_literals_from_param(func, param_name='command'):
-    """
-    Given a function object (or unbound method) `func`, inspect the annotation for parameter
-    `param_name`. If it's a TypedDict with a 'parameters' field that is List[Literal[...]]
-    or directly List[Literal[...]], return a list of literal string choices, otherwise None.
-    """
-    try:
-        module = inspect.getmodule(func) or {}
-        hints = typing.get_type_hints(func, globalns=getattr(module, '__dict__', {}))
-    except Exception:
-        hints = {}
-    ann = hints.get(param_name)
-    if ann is None:
-        return None
-
-    # If annotation is a TypedDict class, inspect its 'parameters' field
-    if hasattr(ann, '__annotations__') or getattr(ann, '__total__', None) is not None:
-        try:
-            td_hints = typing.get_type_hints(ann, globalns=getattr(module, '__dict__', {}))
-            ann = td_hints.get('parameters', ann)
-        except Exception:
-            pass
-
-    # Expect ann to be something like List[Literal[...]] or Literal[...]
-    origin = typing.get_origin(ann)
-    # if it's a container like List[T], drill into T
-    if origin in (list, typing.List):
-        inner = typing.get_args(ann)
-        if not inner:
-            return None
-        ann = inner[0]
-
-    # If ann is Literal[...] return its args
-    if typing.get_origin(ann) is typing.Literal:
-        return list(typing.get_args(ann))
-
-    # If ann itself is Literal without origin handling (fallback)
-    try:
-        if hasattr(ann, '__args__') and ann.__origin__ is typing.Literal:
-            return list(ann.__args__)
-    except Exception:
-        pass
-
-    return None
-
-# Example usage inside your loop where you determine allowed_types:
-# func = self.commands[module_name]['commands'].query  # or the function object you want to inspect
-# literals = extract_allowed_literals_from_param(func, 'command')
-# if literals:
-#     allowed_types = literals
-# else:
-#     allowed_types = self.commands[module_name]['settings']['EXPECT']['subcommands'][messages[module_name]['subcommand']]['types']
-
-import typing
 from typing import get_origin, get_args
 import types as _types
+import requests
+from typing import Optional, Dict, Any, Tuple
+import typing  # needed for expand_annotation's Literal handling
+import time
+import inspect
+from typing import TypedDict
+
+
+class BearerAuthData(TypedDict, total=False):
+    """
+    Minimal auth payload for bearer token retrieval.
+    Must contain at least 'username' and 'password'; callers can add more fields.
+    """
+    username: str
+    password: str
+    # additional optional fields like 'grant_type', 'client_id', 'scope', etc. are allowed
+
+
+# Simple in-memory bearer token cache:
+# { cache_key: {"access_token": str, "expires_at": float} }
+_BEARER_TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def get_bearer_token(
+    token_url: str,
+    auth_data: BearerAuthData,
+    *,
+    cache_key: Optional[str] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+    method: str = "POST",
+    token_field: str = "access_token",
+    expires_in_field: str = "expires_in",
+    default_ttl: int = 3600,
+) -> str:
+    """
+    Obtain (and cache) a bearer token from an authorization endpoint.
+
+    - token_url: URL of the token endpoint.
+    - auth_data: payload sent to the endpoint (e.g. username/password, client_id/secret, grant_type).
+    - cache_key: cache bucket name; if None, no caching is performed.
+    - extra_headers: optional headers for the token request.
+    - method: HTTP method, usually 'POST' (can be 'GET' for some APIs).
+    - token_field: JSON key containing the access token.
+    - expires_in_field: JSON key containing token lifetime in seconds.
+    - default_ttl: used if the response has no expires_in field.
+    """
+    if cache_key:
+        cached = _BEARER_TOKEN_CACHE.get(cache_key)
+        now = time.time()
+        if cached and cached.get("expires_at", 0) > now:
+            logging.debug(
+                "Reusing cached bearer token for cache_key '%s' (expires_at=%s)",
+                cache_key,
+                cached.get("expires_at"),
+            )
+            return cached["access_token"]
+
+    headers = {"Accept": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
+
+    try:
+        logging.debug(f"Requesting bearer token from: {token_url} (cache_key={cache_key})")
+        if method.upper() == "POST":
+            resp = requests.post(token_url, data=auth_data, headers=headers)
+        else:
+            resp = requests.get(token_url, params=auth_data, headers=headers)
+    except requests.exceptions.Timeout:
+        raise TimeoutError("Token request timed out")
+    except requests.exceptions.TooManyRedirects:
+        raise RuntimeError("Too many redirects while requesting token")
+    except requests.exceptions.RequestException as e:
+        raise ConnectionError(f"Connection error while requesting token: {e}")
+
+    if not (200 <= resp.status_code < 300):
+        raise RuntimeError(f"Token endpoint returned {resp.status_code}: {resp.text}")
+
+    try:
+        body = resp.json()
+    except ValueError:
+        raise ValueError("Token endpoint did not return valid JSON")
+
+    if token_field not in body:
+        raise RuntimeError(f"Token field '{token_field}' not found in response: {body}")
+
+    access_token = body[token_field]
+    ttl = int(body.get(expires_in_field, default_ttl))
+    expires_at = time.time() + max(ttl - 30, 0)  # small safety margin
+
+    if cache_key:
+        _BEARER_TOKEN_CACHE[cache_key] = {
+            "access_token": access_token,
+            "expires_at": expires_at,
+        }
+        logging.debug(
+            "Stored new bearer token for cache_key '%s' with expiry at %s",
+            cache_key,
+            expires_at,
+        )
+
+    return access_token
+
+
+def api_get_auth_token(url: str, token: str, headers: Optional[Dict[str, str]] = None) -> Any:
+    """
+    Perform a GET request with a custom 'Token' style Authorization header.
+
+    Example:
+        Authorization: Token <token>
+    """
+    if headers:
+        base_headers = headers
+    else:
+        base_headers: Dict[str, str] = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Token {token}",
+        }
+    
+    try:
+        logging.debug(f"GET (auth token): {url}")
+        resp = requests.get(url, headers=base_headers)
+    except requests.exceptions.Timeout:
+        raise TimeoutError("Request timed out")
+    except requests.exceptions.TooManyRedirects:
+        raise RuntimeError("Too many redirects")
+    except requests.exceptions.RequestException as e:
+        raise ConnectionError(f"Connection error: {e}")  # to be caught by caller
+
+    if 200 <= resp.status_code < 300:
+        try:
+            return resp.json()
+        except ValueError:
+            raise ValueError("Response is not valid JSON")
+        except Exception as e:
+            raise RuntimeError(f"Error parsing JSON response: {e}")
+    raise RuntimeError(f"Unexpected status code {resp.status_code}: {resp.text}")
+
+
+def api_get_bearer_token(
+    token_url: str,
+    auth_data: BearerAuthData,
+    url: str,
+    headers: Optional[Dict[str, str]] = None,
+) -> Any:
+    """
+    Obtain (and cache) a bearer token using the given auth_data, then perform
+    a GET request with a 'Bearer' Authorization header to the specified URL.
+
+    - token_url: URL of the token/authorization endpoint.
+    - auth_data: payload sent to the token endpoint; must contain at least
+                 'username' and 'password', but may include extra fields
+                 (e.g. grant_type, client_id, scope, etc.).
+    - url: protected resource URL to GET.
+    - headers: additional headers for the resource request (merged with Authorization).
+
+    The token is cached per-calling module by default.
+    """
+    # Determine caller module name to use as cache key
+    stack = inspect.stack()
+    caller_frame = stack[1][0] if len(stack) > 1 else None
+    mod = inspect.getmodule(caller_frame) if caller_frame else None
+    cache_key = getattr(mod, "__name__", "unknown_module")
+    token =  _BEARER_TOKEN_CACHE.get(cache_key, {}).get("access_token")
+
+    # Let the caller decide the exact auth_data; we just pass it through
+    
+
+    
+    base_headers: Dict[str, str] = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    if headers:
+        base_headers.update(headers)
+
+    try:
+        logging.debug(f"GET (bearer): {url}")
+        resp = requests.get(url, headers=base_headers)
+        if 200 <= resp.status_code < 300:
+            return resp.json()
+        elif resp.status_code == 401:
+            # Token might be expired; get a new one and retry once
+            token = get_bearer_token(
+                token_url,
+                auth_data,
+                cache_key=cache_key,
+            )
+        base_headers["Authorization"] = f"Bearer {token}"
+        logging.debug(f"Retrying GET (bearer) after obtaining new token: {url}")
+        resp = requests.get(url, headers=base_headers)
+    except requests.exceptions.Timeout:
+        raise TimeoutError("Request timed out")
+    except requests.exceptions.TooManyRedirects:
+        raise RuntimeError("Too many redirects")
+    except requests.exceptions.RequestException as e:
+        raise ConnectionError(f"Connection error: {e}")
+    except ValueError:
+        raise ValueError("Response is not valid JSON")
+    except Exception as e:
+        raise RuntimeError(f"Error parsing JSON response: {e}")
+    raise RuntimeError(f"Unexpected status code {resp.status_code}: {resp.text}")
+
+
+def api_get_basic_auth(
+    url: str,
+    username: str,
+    password: str,
+    headers: Optional[Dict[str, str]] = None,
+) -> Any:
+    """
+    Perform a GET request using HTTP Basic authentication.
+    """
+    base_headers: Dict[str, str] = {
+        "Accept": "application/json",
+    }
+    if headers:
+        base_headers.update(headers)
+
+    try:
+        logging.debug(f"GET (basic auth): {url}")
+        resp = requests.get(url, headers=base_headers, auth=(username, password))
+    except requests.exceptions.Timeout:
+        raise TimeoutError("Request timed out")
+    except requests.exceptions.TooManyRedirects:
+        raise RuntimeError("Too many redirects")
+    except requests.exceptions.RequestException as e:
+        raise ConnectionError(f"Connection error: {e}")
+
+    if 200 <= resp.status_code < 300:
+        try:
+            return resp.json()
+        except ValueError:
+            raise ValueError("Response is not valid JSON")
+        except Exception as e:
+            raise RuntimeError(f"Error parsing JSON response: {e}")
+
+    raise RuntimeError(f"Unexpected status code {resp.status_code}: {resp.text}")
+
 
 def expand_annotation(ann):
     """Return a set of concrete annotation members (types or literal values).
@@ -195,63 +274,3 @@ def expand_annotation(ann):
     # Fallback: single annotation (type or value)
     members.add(ann)
     return members
-
-
-from typing import Any, Iterable, Tuple
-
-def expects(*types):
-    """Decorator to attach expected parameter types to a command function.
-    Usage: @expects(Domain, IPv4) or @expects('mode1','mode2')
-    """
-    def deco(func):
-        func._expected_types = types
-        return func
-    return deco
-
-def try_coerce_to_expected(token: str, expected: Iterable[Any]) -> Tuple[Any, Any]:
-    """Try to coerce `token` into one of the items in `expected`.
-    Returns (coerced_value, matched_expected) or (None, None) if no match.
-    Rules:
-    - If expected item is a class that subclasses str (validator classes): try to construct it.
-    - If expected item is a literal (str/int/...): compare directly (case-insensitive for strings).
-    - Fallback: use detect_type to match class names (compare lowercase).
-    """
-    if not expected:
-        return None, None
-
-    # normalize expected to a sequence
-    for exp in expected:
-        # literal constants (strings/ints/...)
-        if isinstance(exp, (str, int, float, bool)):
-            if isinstance(exp, str):
-                if token.lower() == exp.lower():
-                    return token, exp
-            else:
-                if str(exp) == token:
-                    return token, exp
-            continue
-
-        # validator classes that subclass str (Domain, IPv4, ...)
-        if isinstance(exp, type):
-            try:
-                if isinstance(token, exp):
-                    return token, exp
-                coerced = exp(token)   # may raise ValueError on invalid
-                return coerced, exp
-            except Exception:
-                # fallback: compare detected type name
-                detected = typevalidatorsdetect_type(token)
-                name = getattr(exp, '__name__', str(exp)).lower()
-                if detected and detected == name.replace('_', ''):  # tolerate small name diffs
-                    return token, exp
-                continue
-
-        # fallback compare stringified expected
-        try:
-            if str(exp).lower() == token.lower():
-                return token, exp
-        except Exception:
-            pass
-
-    # nothing matched
-    return None, None

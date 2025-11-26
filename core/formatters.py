@@ -1,10 +1,68 @@
+from typing import Dict, Any
 """Formatters for module results.
 
 Provides helpers to convert structured module output (source/responses/data)
 into the normalized {'messages': [...]} form consumed by the rest of the bot.
 """
-from typing import Dict, Any
 
+
+"""
+Data is received from the modules in the dict format:
+
+{
+    "source":"full service name",
+    "responses": [
+        {
+            "paragraph":"subtitle",
+            "preamble":"introduction to source",
+            "data": [
+                {"category":"Indicator", "datapoint":"IP address", "stix-type":"ipv4-addr", "value":"value"},
+                {"category":"Indicator", "datapoint":"datapoint", "value":"value"},
+                {"category":"Indicator", "datapoint":"Comment", "value":"Free text giving context on the indicator."}
+                
+            ]
+        }
+    ]
+}
+
+No hit:
+{
+    "source":"provider",
+    "responses": []
+}
+
+category, datapoint and value are taken from the source. Only stix-type
+is the same across modules for values of the same type.
+
+Eventually converts to a message text and possibly an attachment.
+The text can have multiple paragraph with a short introduction of the source.
+
+Output data in the format structure:
+
+module_name
+- service name
+- preamble
+    - paragraph
+        - data set
+            - category
+                - datapoint
+                - stix-type
+                    - value
+Can be converted to output:
+
+** Service name **
+|*Indicator 1*|            |
+|-------------|------------|
+|IP address   | 1.1.1.1    |
+|Comment      | Context    |
+
+|*Indicator 2*|            |
+|-------------|------------|
+|IP address   | 1.1.1.1    |
+|Comment      | Context    |
+
+
+"""
 
 def format_as_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a structured module result into a dict with 'messages' key.
@@ -43,6 +101,8 @@ def format_as_tables(result: Dict[str, Any]) -> Dict[str, Any]:
             subcategory = data.get('subcategory', '') or ''
             datapoint = data.get('datapoint') or data.get('name') or ''
             value = data.get('value', '')
+            doc = data.get('doc', '')
+
             # stix = data.get('stix-type') or data.get('stix_type') or ''
 
             # markdown table row
@@ -58,12 +118,12 @@ def format_as_tables(result: Dict[str, Any]) -> Dict[str, Any]:
             # Add a full-width field when category/subcategory changes to act as a section header
             cat_sub = (category, subcategory)
             if cat_sub != last_cat_sub:
-                header_title = subcategory if subcategory else category
-                header_sub = f" / {subcategory}" if subcategory else ""
+                header_title = category # subcategory if subcategory else category
+                header_sub = f" - {subcategory}" if subcategory else ""
                 fields.append({
                     "short": False,
-                    "title": f"{header_title}",
-                    "value": ""  # optional intro for the section
+                    "title": f"{header_title}{header_sub}",
+                    "value": doc
                 })
                 last_cat_sub = cat_sub
 
