@@ -3,10 +3,7 @@ This module provides help texts and documentation for other modules.
 """
 import logging
 from typing import List
-
 from core.typevalidators import Domain, IPv4, LongString, String
-from core import helpers
-import inspect
 
 
 
@@ -18,6 +15,7 @@ def explain(parameters: List[String], options: str = None, modules=None, *args, 
     """
     List all commands or give detailed help about a specific command or commands.
     """
+
     data = {
         "module": __package__,
         "source": 'Matterbot Help Module',
@@ -41,7 +39,7 @@ def explain(parameters: List[String], options: str = None, modules=None, *args, 
                 })
 
     # If no params: list all known binds as datapoints, values empty
-    if not parameters:
+    if parameters == []:
         logging.info("Help called without parameters.")
 
         response = {

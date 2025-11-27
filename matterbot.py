@@ -14,7 +14,6 @@ import os
 import pathlib
 import sys
 import configargparse
-import typing
 from typing import get_type_hints, get_origin, get_args
 
 from mattermostdriver import Driver
@@ -552,9 +551,20 @@ class MattermostManagers(object):
                 else:
                     log.info(f"This is very odd. \"{word}\" is not a command keyword and I am not expecting parameters.")
             
-                log.warning(f"Finished making tasks: {tasks}")        
-            """ End of message parsing loop """
+                log.warning(f"Finished making tasks: {tasks}")
 
+            # # If there is exactly one task and it has no parameters,
+            # # treat the command as parameter to the 'help' subcommand.
+            # if len(tasks) == 1:
+            #     if len(tasks[1]) == 1:
+            #         [(mod, entry)] = tasks[1].items()
+            #         if entry.get('parameters', []) == []:
+            #             if 'help' in self.modules.keys():
+            #                 tasks[1] = { 'help': {  'parameters': [entry['command']],
+            #                                         'subcommand': 'explain'
+            #                                     }
+            #                             }
+            """ End of message parsing loop """
 
             files = []
             log.debug(f"Check on post. Type is {type(post)}, content:{post}")

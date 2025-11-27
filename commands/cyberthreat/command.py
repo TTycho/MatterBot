@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
 """
 This module allows to query the cyberthreat.nl API for threat intelligence data.
 """
 import logging
 from datetime import datetime
-from typing import List, Literal, TypedDict
+from typing import List
 
 from core.typevalidators import Domain, IPv4, String
 from core import helpers  # use helpers.api_get_auth_token
@@ -16,12 +15,28 @@ except ModuleNotFoundError:
 
 SERVICE_NAME = 'cyberthreat.nl *Hosting Intelligence* API'
 
+"""
+Any public functions in this module will be registered as commands by MatterBot. 
+The first function will be the default command.
+Each function must accept parameters: List[TypeValidator], options: str, *args, **kwargs.
+The typevalidators used in the parameters list can be found int core/typevalidators.py
+Input will be validated and normalized. There is no need to convert hostnames to bare domain names,
+use the Domain type if you do not want to have subdomains included.
 
-def query(parameters: List[Domain | IPv4], options: str, *args, **kwargs) -> dict:
+The parameters will be passed in a list, type hint List[TypeValidator]. Process the parameters accordingly.
+Docstrings are used for help texts. There is no need for a help command.
+"""
+
+
+def query(parameters: List[Domain | IPv4], options: str, modules=None, *args, **kwargs) -> dict:
     """
     Query the cyberthreat API with a domain or IPv4 address.
     """
 
+    # return help if no parameters are given
+    if parameters == []:
+        return modules['help']['commands']['explain']['function'](parameters=['@ct'], options=None, modules=modules)
+    
 
     filters = '&'.join(settings.APIURL['cyberthreat']['filters'])
     # always create the structured result early so we can return it unconditionally
@@ -121,6 +136,66 @@ def query(parameters: List[Domain | IPv4], options: str, *args, **kwargs) -> dic
                             "stix-type": "",
                             "value": item,
                         })
+            if isinstance(param, IPv4):
+                logging.debug(f"Processing ip parameter: {param}")
+
+                base_url = settings.APIURL['cyberthreat']['url']
+                url = f"{base_url}addresses/{param}?{filters}"
+                results = helpers.api_get_auth_token(url,  settings.APIURL['cyberthreat']['apikey'])
+                # results = results.get('results')
+                addr_list = dict()
+
+                for result in results:
+                    address = result['address']
+                    addr_list[address] = {}
+                    last_seen = datetime.strptime(result['last_seen'], '%Y-%m-%dT%H:%M:%S.%f%z')
+                    addr_list[address]['actor'] = result.get('actor')
+                    addr_list[address]['type'] = result.get('type')
+                    addr_list[address]['credibility'] = min(addr_list[address].get('credibility', 6), result['credibility'])
+                    addr_list[address]['last_seen'] = max(addr_list[address].get('last_seen', last_seen), last_seen)
+
+                for address in addr_list:
+                    response += 1
+                    text = (
+                        f"`{address}` "
+                        f"{settings.confidence_tabel[addr_list[address]['credibility']]['level']} "
+                        f"used by the {addr_list[address]['type']} network of actor "
+                        f"**{addr_list[address]['actor'].capitalize()}**.\n"
+                    )
+
+                    data['responses'].append({})
+                    data['responses'][response]['paragraph'] = "Address search"
+                    data['responses'][response]['preamble'] = text
+                    data['responses'][response]['data'] = list()
+                    data['responses'][response]['data'].append({
+                        "category": "Hosting",
+                        "subcategory": "Network",
+                        "datapoint": "IP address",
+                        "stix-type": "ipv4-addr",
+                        "value": address,
+                    })
+                    data['responses'][response]['data'].append({
+                        "category": "Hosting",
+                        "subcategory": "Network",
+                        "datapoint": "actor",
+                        "stix-type": "threat-actor",
+                        "value": addr_list[address]['actor'],
+                    })
+                    data['responses'][response]['data'].append({
+                        "category": "Hosting",
+                        "subcategory": "Network",
+                        "datapoint": "last seen",
+                        "stix-type": "last-observed",
+                        "value": addr_list[address]['last_seen'].strftime('%Y-%m-%d'),
+                    })
+                    data['responses'][response]['data'].append({
+                        "category": "Hosting",
+                        "subcategory": "Network",
+                        "datapoint": "credibility",
+                        "stix-type": "x_cyberthreat_credibility",
+                        "value": settings.confidence_tabel[addr_list[address]['credibility']]['short_description'],
+                    })
+                    
     except Exception as e:
         data['responses'].append({
             'paragraph': 'Error',
@@ -147,7 +222,7 @@ def actor(parameters: List[String], options: str = None, *args, **kwargs):
         # use helpers.api_get_auth_token instead of cyberthreat.wget
         base_url = settings.APIURL['cyberthreat']['url']
         url = f"{base_url}actors"
-        results = helpers.api_get_auth_token(url, cyberthreat.getapikey())
+        results = helpers.api_get_auth_token(url,  settings.APIURL['cyberthreat']['apikey'])
         for actor_item in results.get('results', []):
             if actor_item.get('name', '').lower() == str(name).lower():
                 resp = {
