@@ -313,7 +313,7 @@ class MattermostManagers(object):
         channame = chaninfo['name']
         if chaninfo['type'] in ('O', 'P'):
             log.debug(f"Channel name: {chaninfo['name']}")
-            if (channame or 'any') in self.modules[module]['settings']['CHANS']:
+            if (channame  in self.modules[module]['settings']['CHANS']) or ('any'  in self.modules[module]['settings']['CHANS']):
                 return True
         elif chaninfo['type'] == 'D' and 'private' in self.modules[module]['settings']['CHANS']:
             return True

@@ -30,7 +30,9 @@ Docstrings are used for help texts. There is no need for a help command.
 
 def query(parameters: List[Domain | IPv4], options: str, modules=None, *args, **kwargs) -> dict:
     """
-    Query the cyberthreat API with a domain or IPv4 address.
+    Query the cyberthreat API for a domain or IPv4 address.
+    Input must be an _IP address_ or something with a _domain name_ such as a hostname, fully qualified domain name, URL etc.
+    The returned actor handle can also be queried for further information with the **actor** command.
     """
 
     # return help if no parameters are given
