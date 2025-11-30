@@ -10,7 +10,11 @@ into the normalized {'messages': [...]} form consumed by the rest of the bot.
 Data is received from the modules in the dict format:
 
 {
+        "source": SERVICE_NAME,
+        "responses": [],
+        "message": "message"
     "source":"full service name",
+    "module": __package__,
     "responses": [
         {
             "paragraph":"subtitle",
@@ -22,16 +26,24 @@ Data is received from the modules in the dict format:
                 
             ]
         }
-    ]
+    ],
+    "message": "Textual message instead of data [optional]"
+    "errormessage": "Optional error message"
 }
 
 No hit:
 {
     "source":"provider",
     "responses": []
+}   "module": __package__,
+ 
+Error:
+{
+    "errormessage": "Error message. Data optional."
 }
 
-category, datapoint and value are taken from the source. Only stix-type
+
+category, datapoint and value should be taken from the source. Only stix-type
 is the same across modules for values of the same type.
 
 Eventually converts to a message text and possibly an attachment.
@@ -48,6 +60,7 @@ module_name
                 - datapoint
                 - stix-type
                     - value
+
 Can be converted to output:
 
 ** Service name **
@@ -63,7 +76,7 @@ Can be converted to output:
 
 
 """
-
+import logging
 def format_as_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a structured module result into a dict with 'messages' key.
 
@@ -75,13 +88,22 @@ def format_as_tables(result: Dict[str, Any]) -> Dict[str, Any]:
 
     This gives both a readable table and a column-like layout via attachment fields.
     """
+    logging.debug(f"Formatting result with format_as_tables formatter. Results:\n{result}")
+
     def _escape_cell(x):
         return str(x).replace('|', r'\|') if x is not None else ''
 
     msgs = []
     source = result.get('source', '')
     author = result.get('module', 'matterbot')
-
+    #  The result dict should only contain the 'messages' key if there is no data and the module is 'chatty'. 
+    # Text responses to queries should normally go in the preamble section of the field.
+    message = result.get('message', '') + result.get('errormessage', '')  # Other formatters can suppress errormessages if needed
+    logging.debug(f"Message: {message}")
+    if message:
+        msgs.append({
+            "text": message # Other formatters can suppress errormessages if needed 
+        })
     for resp in result.get('responses', []):
         parts = []
         preamble = resp.get('preamble')
@@ -106,9 +128,9 @@ def format_as_tables(result: Dict[str, Any]) -> Dict[str, Any]:
             # stix = data.get('stix-type') or data.get('stix_type') or ''
 
             # markdown table row
-            row = "| {} | {} |".format(
-                # _escape_cell(category),
-                # _escape_cell(subcategory),
+            row = "| {} | {} | {} | {} |".format(
+                _escape_cell(category),
+                _escape_cell(subcategory),
                 _escape_cell(datapoint),
                 _escape_cell(value),
                 # _escape_cell(stix),
@@ -139,7 +161,7 @@ def format_as_tables(result: Dict[str, Any]) -> Dict[str, Any]:
 
         # build markdown table (fallback / visible in message body)
         if data_rows:
-            table_header = "| Category | Subcategory | Datapoint | Value | STIX |"
+            table_header = "| Category | Subcategory | Datapoint | Value |"
             table_sep = "|---|---|---|---|---|"
             table_md = "\n".join([table_header, table_sep] + data_rows)
             parts.append(table_md)

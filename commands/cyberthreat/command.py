@@ -4,7 +4,6 @@ This module allows to query the cyberthreat.nl API for threat intelligence data.
 import logging
 from datetime import datetime
 from typing import List
-
 from core.typevalidators import Domain, IPv4, String
 from core import helpers  # use helpers.api_get_auth_token
 
@@ -45,7 +44,8 @@ def query(parameters: List[Domain | IPv4], options: str, modules=None, *args, **
     data = {
         "module": __package__,
         "source": SERVICE_NAME,
-        "responses": []
+        "responses": [],
+        "message": ""
     }
 
     # Example usage of type checking
@@ -53,7 +53,7 @@ def query(parameters: List[Domain | IPv4], options: str, modules=None, *args, **
     try:
         for param in parameters:
             if isinstance(param, Domain):
-                logging.debug(f"Processing domain parameter: {param}")
+                logging.debug(f"Processing parameter: '{param}' as a domain")
 
                 base_url = settings.APIURL['cyberthreat']['url']
                 url = f"{base_url}domains?domain={param}&{filters}"
@@ -199,11 +199,8 @@ def query(parameters: List[Domain | IPv4], options: str, modules=None, *args, **
                     })
                     
     except Exception as e:
-        data['responses'].append({
-            'paragraph': 'Error',
-            'preamble': str(e),
-            'data': []
-        })
+        logging.error(f"Error querying cyberthreat.nl API: {e}")
+        data['message'] = "##Error!\n" + str(e)
 
     # Return either populated data or the empty dict created at the start.
     return data
@@ -241,10 +238,8 @@ def actor(parameters: List[String], options: str = None, *args, **kwargs):
                 })
                 data['responses'].append(resp)
     except Exception as e:
-        data['responses'].append({
-            'paragraph': 'Error',
-            'preamble': str(e),
-            'data': []
-        })
+        logging.error(f"Error querying cyberthreat.nl API: {e}")
+        data['message'] = "##Error!\n" + str(e)
+
     return data
 
