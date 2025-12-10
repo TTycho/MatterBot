@@ -10,6 +10,7 @@ __pycache__/
 .Python
 build/
 config.yaml
+
 # Do not upload configurations
 bindmap.json
 commands/*/settings.py
@@ -18,8 +19,11 @@ modules/*/*.cache
 modules/*/*.json
 modules/*/settings.py
 modules/csirt*/*
+
 # Do not share proprietary content
 commands/*/template/*
+work/
+
 # Not really useful for public use
 commands/docgen/*
 CVE-*
@@ -118,11 +122,17 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Development tools settings
+.github
+.continue
+.vscode
+
 # Environments
 .env
 .venv
 env/
 venv/
+virtualenv/
 ENV/
 env.bak/
 venv.bak/

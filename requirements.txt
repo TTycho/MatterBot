@@ -6,7 +6,7 @@ mattermostdriver
 
 # Core module dependencies
 # ipaddress
-# tldextract
+tldextract
 validators
 # Web scraping and parsing
 beautifulsoup4
