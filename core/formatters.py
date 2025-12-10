@@ -11,11 +11,8 @@ Data is received from the modules in the dict format:
 
 {
         "source": SERVICE_NAME,
-        "responses": [],
-        "message": "message"
-    "source":"full service name",
-    "module": __package__,
-    "responses": [
+        "module": __package__,
+        "responses": [
         {
             "paragraph":"subtitle",
             "preamble":"introduction to source",
@@ -26,7 +23,7 @@ Data is received from the modules in the dict format:
                 
             ]
         }
-    ],
+        ],
     "message": "Textual message instead of data [optional]"
     "errormessage": "Optional error message"
 }
@@ -156,7 +153,7 @@ def format_as_tables(result: Dict[str, Any]) -> Dict[str, Any]:
             fields.append({
                 "short": True,
                 "title": str(datapoint) or "(value)",
-                "value": value_display
+                "value": '`' + value_display + '`' # added backticks to prevent mattermost from creating hyperlinks.
             })
 
         # build markdown table (fallback / visible in message body)

@@ -5,7 +5,6 @@ import requests
 from typing import Optional, Dict, Any, Tuple
 import typing  # needed for expand_annotation's Literal handling
 import time
-import inspect
 from typing import TypedDict
 
 
@@ -23,7 +22,6 @@ class BearerAuthData(TypedDict, total=False):
 # { cache_key: {"access_token": str, "expires_at": float} }
 _BEARER_TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
 
-
 def get_bearer_token(
     token_url: str,
     auth_data: BearerAuthData,
@@ -40,23 +38,22 @@ def get_bearer_token(
 
     - token_url: URL of the token endpoint.
     - auth_data: payload sent to the endpoint (e.g. username/password, client_id/secret, grant_type).
-    - cache_key: cache bucket name; if None, no caching is performed.
+    - cache_key: optional cache bucket name. If set, tokens are cached + reused until expiry.
     - extra_headers: optional headers for the token request.
     - method: HTTP method, usually 'POST' (can be 'GET' for some APIs).
     - token_field: JSON key containing the access token.
     - expires_in_field: JSON key containing token lifetime in seconds.
     - default_ttl: used if the response has no expires_in field.
     """
-    if cache_key:
-        cached = _BEARER_TOKEN_CACHE.get(cache_key)
-        now = time.time()
-        if cached and cached.get("expires_at", 0) > now:
-            logging.debug(
-                "Reusing cached bearer token for cache_key '%s' (expires_at=%s)",
-                cache_key,
-                cached.get("expires_at"),
-            )
-            return cached["access_token"]
+    cached = _BEARER_TOKEN_CACHE.get(cache_key) if cache_key else None
+    now = time.time()
+    if cached and cached.get("expires_at", 0) > now:
+        logging.debug(
+            "Reusing cached bearer token for cache_key '%s' (expires_at=%s)",
+            cache_key,
+            cached.get("expires_at"),
+        )
+        return cached["access_token"]
 
     headers = {"Accept": "application/json"}
     if extra_headers:
@@ -104,7 +101,7 @@ def get_bearer_token(
     return access_token
 
 
-def api_get_auth_token(url: str, token: str, headers: Optional[Dict[str, str]] = None) -> Any:
+def api_get_with_auth_token(url: str, token: str | None, headers: Optional[Dict[str, str]] = None) -> Any:
     """
     Perform a GET request with a custom 'Token' style Authorization header.
 
@@ -140,73 +137,58 @@ def api_get_auth_token(url: str, token: str, headers: Optional[Dict[str, str]] =
     raise RuntimeError(f"Unexpected status code {resp.status_code}: {resp.text}")
 
 
-def api_get_bearer_token(
+def api_get_with_bearer_token(
     token_url: str,
     auth_data: BearerAuthData,
     url: str,
     headers: Optional[Dict[str, str]] = None,
+    params: Optional[Dict[str, str]] = None,
+    *,
+    cache_key: str,
 ) -> Any:
-    """
-    Obtain (and cache) a bearer token using the given auth_data, then perform
-    a GET request with a 'Bearer' Authorization header to the specified URL.
+    """GET a resource protected by a bearer token with helper-managed caching."""
+    if not cache_key:
+        raise ValueError("cache_key must be provided for bearer requests")
 
-    - token_url: URL of the token/authorization endpoint.
-    - auth_data: payload sent to the token endpoint; must contain at least
-                 'username' and 'password', but may include extra fields
-                 (e.g. grant_type, client_id, scope, etc.).
-    - url: protected resource URL to GET.
-    - headers: additional headers for the resource request (merged with Authorization).
-
-    The token is cached per-calling module by default.
-    """
-    # Determine caller module name to use as cache key
-    stack = inspect.stack()
-    caller_frame = stack[1][0] if len(stack) > 1 else None
-    mod = inspect.getmodule(caller_frame) if caller_frame else None
-    cache_key = getattr(mod, "__name__", "unknown_module")
-    token =  _BEARER_TOKEN_CACHE.get(cache_key, {}).get("access_token")
-
-    # Let the caller decide the exact auth_data; we just pass it through
-    
-
-    
     base_headers: Dict[str, str] = {
-        "Content-Type": "application/json",
         "Accept": "application/json",
-        "Authorization": f"Bearer {token}",
     }
     if headers:
         base_headers.update(headers)
 
-    try:
+    token = _BEARER_TOKEN_CACHE.get(cache_key, {}).get("access_token")
+    for attempt in range(2):
+        if not token:
+            token = get_bearer_token(token_url, auth_data, cache_key=cache_key)
+
+        headers_with_auth = base_headers.copy()
+        headers_with_auth["Authorization"] = f"Bearer {token}"
         logging.debug(f"GET (bearer): {url}")
-        resp = requests.get(url, headers=base_headers)
+        try:
+            resp = requests.get(url, headers=headers_with_auth, params=params)
+        except requests.exceptions.Timeout:
+            raise TimeoutError("Request timed out")
+        except requests.exceptions.TooManyRedirects:
+            raise RuntimeError("Too many redirects")
+        except requests.exceptions.RequestException as e:
+            raise ConnectionError(f"Connection error: {e}")
+
+        if resp.status_code == 401:
+            token = None  # force refresh next iteration
+            continue
+
         if 200 <= resp.status_code < 300:
-            return resp.json()
-        elif resp.status_code == 401:
-            # Token might be expired; get a new one and retry once
-            token = get_bearer_token(
-                token_url,
-                auth_data,
-                cache_key=cache_key,
-            )
-        base_headers["Authorization"] = f"Bearer {token}"
-        logging.debug(f"Retrying GET (bearer) after obtaining new token: {url}")
-        resp = requests.get(url, headers=base_headers)
-    except requests.exceptions.Timeout:
-        raise TimeoutError("Request timed out")
-    except requests.exceptions.TooManyRedirects:
-        raise RuntimeError("Too many redirects")
-    except requests.exceptions.RequestException as e:
-        raise ConnectionError(f"Connection error: {e}")
-    except ValueError:
-        raise ValueError("Response is not valid JSON")
-    except Exception as e:
-        raise RuntimeError(f"Error parsing JSON response: {e}")
-    raise RuntimeError(f"Unexpected status code {resp.status_code}: {resp.text}")
+            try:
+                return resp.json()
+            except ValueError:
+                body = resp.text
+                raise ValueError(f"HTTP {resp.status_code}. Response is not valid JSON: {body}")
+        else:
+            body = resp.text
+            raise ValueError(f"HTTP {resp.status_code}. Failed to execute bearer request: {body}")
 
 
-def api_get_basic_auth(
+def api_get_with_basic_auth(
     url: str,
     username: str,
     password: str,
@@ -235,7 +217,8 @@ def api_get_basic_auth(
         try:
             return resp.json()
         except ValueError:
-            raise ValueError("Response is not valid JSON")
+            body = resp.text
+            raise ValueError(f"HTTP {resp.status_code} Response is not valid JSON: {body}")
         except Exception as e:
             raise RuntimeError(f"Error parsing JSON response: {e}")
 
@@ -274,3 +257,4 @@ def expand_annotation(ann):
     # Fallback: single annotation (type or value)
     members.add(ann)
     return members
+

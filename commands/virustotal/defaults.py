@@ -1,25 +1,20 @@
-#!/usr/bin/env python3
-
-BINDS = ['@virustotal', '@ioc', '@vt']
-CHANS = ['debug']
 APIURL = {
-    'virustotal':   {'url': 'https://www.virustotal.com/api/v3/',
-                     'key': ['<your-api-key-here>','<another-api-key>','<yet-another-...>']},
-    'malpedia':     {'url': 'https://malpedia.caad.fkie.fraunhofer.de/api/get/yara',
-                     'key': '<your-api-key-here>',
-                     'enabled': True},
-}
-CONTENTTYPE = 'application/json'
-HELP = {
-    'DEFAULT': {
-        'args': 'Any IoC, e.g. an IP address, hostname, URL, hash, etc.',
-        'desc': 'Query VirusTotal for the given IoC.',
+    'virustotal': {
+        # Base URL and keys are reused by the old-style module; do not change.
+        'url': 'https://www.virustotal.com/api/v3/',
+        'key': ['YOUR_VIRUSTOTAL_API_KEY_HERE'],
+    },
+    'malpedia': {
+        # Optional Malpedia integration used for YARA rulesets.
+        'enabled': False,
+        'url': 'https://malpedia.caad.fkie.fraunhofer.de/api/get',
+        'key': 'YOUR_MALPEDIA_API_KEY_HERE',
     },
 }
 
+CONTENTTYPE = 'application/json'
 
-# Note: if you use multiple VirusTotal API keys to circumvent their API usage restrictions,
-# you're breaking VT's terms of service. You're on your own.
-
-# Enable the Malpedia settings to attempt to automatically grab accompanying YARA rulesets
-# when you look up an IoC. You need a valid API key to be able to do this, in some cases.
+# MatterBot command bindings and visual settings
+BINDS = ['virustotal', 'vt']
+CHANS = []
+COLOR = '#4285F4'  # VirusTotal / Google blue
