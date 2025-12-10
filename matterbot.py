@@ -442,7 +442,6 @@ class MattermostManagers(object):
             tasks = dict() # maybe rename to tasks later?
             addparams = False
             quoted_text = []
-            expected_types = set()
             idx = 0
             message_idx = 0
             #for idxx, word in enumerate(message):
@@ -491,29 +490,27 @@ class MattermostManagers(object):
                     # Treat the first " that preceeds a word as the start of quoted text.
                     if word.startswith('"') and word.endswith('"') and len(word) > 1 and not quoted_text:
                         # A single word quoted text
-                        param_value = word[1:-1]
-                        for module_name, task_entry in tasks[idx].items():
-                            task_entry['parameters'].append(param_value)
-                            log.warning(f"Added parameter to {module_name}({idx}): {param_value}")
+                        word = word[1:-1]
+                        # for module_name, task_entry in tasks[idx].items():
+                        #     task_entry['parameters'].append(param_value)
+                        #     log.warning(f"Added parameter to {module_name}({idx}): {param_value}")
                         addparams = False  # stop looking for more parameters
                     elif word.startswith('"') and not quoted_text:
                         quoted_text.append(word[1:] if len(word) > 1 else '')
+                        continue # go to next word
                     # Only stop when the endquote prepends a word or is a single character.
                     elif word.endswith('"') and quoted_text:
                         quoted_text.append(word[:-1])  # do not add the quote character itself
-                        param_value = ' '.join(quoted_text)
-                        # Process the quoted text as a single parameter
-                        for module_name, task_entry in tasks[idx].items():
-                            task_entry['parameters'].append(param_value)
-                            log.warning(f"Added parameter to {module_name}({idx}): {param_value}")
+                        word =  ' '.join(quoted_text)
                         # stop looking for more parameters and reset quoted_text variable.
                         addparams = False
                         quoted_text = []
                     elif quoted_text:
                         quoted_text.append(word)
+                        continue  # go to next word
 
                     # Check if this word is a subcommand (only if no parameters yet)
-                    elif any(
+                    if any(
                         not task_entry.get('parameters') and word in self.modules[module_name]['commands']
                         for module_name, task_entry in tasks[idx].items()
                     ):
@@ -538,7 +535,6 @@ class MattermostManagers(object):
                                 else:
                                     log.info(f"Validation succeeded for {word} against {Validator.__name__} in {module_name}")
                                     task_entry['parameters'].append(parameter)
-                                    log.warning(f"Added parameter to {module_name}({idx}): {parameter} ({type(parameter)})")
                                     validparam = True
                         if not validparam:
                             log.warning(f"Failed to validate parameter {word} for any type in tasks[{idx}]")
@@ -549,9 +545,9 @@ class MattermostManagers(object):
                             addparams = False  # stop looking for more parameters
 
                 else:
-                    log.info(f"This is very odd. \"{word}\" is not a command keyword and I am not expecting parameters.")
+                    log.warning(f"This is very odd. \"{word}\" is not a command keyword and I am not expecting parameters.")
             
-                log.warning(f"Finished making tasks: {tasks}")
+                log.debug(f"Finished making tasks: {tasks}")
 
             # # If there is exactly one task and it has no parameters,
             # # treat the command as parameter to the 'help' subcommand.
@@ -575,7 +571,7 @@ class MattermostManagers(object):
 
             """
             We can have different tasks which might call serveral modules. idx is the task number but because idx is 
-            already set to the last task we use sub here instead.            
+            already set to the last task we use sub here.            
             """
             with concurrent.futures.ThreadPoolExecutor(max_workers=None) as executor:
                 log.debug(f"tasks to process: {tasks}")
