@@ -24,12 +24,10 @@ _BEARER_TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
 
 def get_bearer_token(
     token_url: str,
+    method: str,
     auth_data: BearerAuthData,
-    *,
     cache_key: Optional[str] = None,
     extra_headers: Optional[Dict[str, str]] = None,
-    method: str = "POST",
-    token_field: str = "access_token",
     expires_in_field: str = "expires_in",
     default_ttl: int = 3600,
 ) -> str:
@@ -37,11 +35,10 @@ def get_bearer_token(
     Obtain (and cache) a bearer token from an authorization endpoint.
 
     - token_url: URL of the token endpoint.
+    - method: HTTP method, usually 'POST' (can be 'GET' for some APIs).
     - auth_data: payload sent to the endpoint (e.g. username/password, client_id/secret, grant_type).
     - cache_key: optional cache bucket name. If set, tokens are cached + reused until expiry.
     - extra_headers: optional headers for the token request.
-    - method: HTTP method, usually 'POST' (can be 'GET' for some APIs).
-    - token_field: JSON key containing the access token.
     - expires_in_field: JSON key containing token lifetime in seconds.
     - default_ttl: used if the response has no expires_in field.
     """
@@ -62,9 +59,12 @@ def get_bearer_token(
     try:
         logging.debug(f"Requesting bearer token from: {token_url} (cache_key={cache_key})")
         if method.upper() == "POST":
-            resp = requests.post(token_url, data=auth_data, headers=headers)
-        else:
+            headers.setdefault("Content-Type", "application/json")
+            resp = requests.post(token_url, json=auth_data, headers=headers)
+        elif method.upper() == "GET":
             resp = requests.get(token_url, params=auth_data, headers=headers)
+        else:
+            raise RuntimeError(f"Expected 'POST' or 'GET' method for token request, got: '{method}'")
     except requests.exceptions.Timeout:
         raise TimeoutError("Token request timed out")
     except requests.exceptions.TooManyRedirects:
@@ -80,10 +80,12 @@ def get_bearer_token(
     except ValueError:
         raise ValueError("Token endpoint did not return valid JSON")
 
-    if token_field not in body:
-        raise RuntimeError(f"Token field '{token_field}' not found in response: {body}")
-
-    access_token = body[token_field]
+    # Accept common token field names.
+    access_token = ""
+    for field in ["access_token", "token"]:
+        if field in body:
+            access_token = body[field]
+            break
     ttl = int(body.get(expires_in_field, default_ttl))
     expires_at = time.time() + max(ttl - 30, 0)  # small safety margin
 
@@ -145,8 +147,13 @@ def api_get_with_bearer_token(
     params: Optional[Dict[str, str]] = None,
     *,
     cache_key: str,
+    method: str = "POST",
 ) -> Any:
-    """GET a resource protected by a bearer token with helper-managed caching."""
+    """GET a resource protected by a bearer token with helper-managed caching.
+
+    - method: HTTP method used to obtain the bearer token ("POST" with JSON body by default,
+      or "GET" with query parameters when explicitly set).
+    """
     if not cache_key:
         raise ValueError("cache_key must be provided for bearer requests")
 
@@ -159,7 +166,7 @@ def api_get_with_bearer_token(
     token = _BEARER_TOKEN_CACHE.get(cache_key, {}).get("access_token")
     for attempt in range(2):
         if not token:
-            token = get_bearer_token(token_url, auth_data, cache_key=cache_key)
+            token = get_bearer_token(token_url, method, auth_data, cache_key=cache_key)
 
         headers_with_auth = base_headers.copy()
         headers_with_auth["Authorization"] = f"Bearer {token}"
